@@ -85,8 +85,9 @@ export function Transactions() {
               {txs.map((t) => (
                 <tr key={t.id}>
                   <td style={{ whiteSpace: 'nowrap' }}>{fmtDate(t.date)}</td>
-                  <td style={{ maxWidth: 360, overflowWrap: 'anywhere' }}>{t.description}</td>
-                  <td>{t.account} {t.owner === 'business' && <span className="pill business">biz</span>}</td>
+                  <td className="tx-desc"><div className="tx-merchant">{merchantOf(t.description) || t.description}</div>
+                    {merchantOf(t.description) && merchantOf(t.description) !== t.description && <div className="sub">{t.description.slice(merchantOf(t.description).length).trim()}</div>}</td>
+                  <td className="tx-account">{t.account} {t.owner === 'business' && <span className="pill business">biz</span>}</td>
                   <td>
                     <select value={t.category ?? ''} onChange={(e) => setCat(t, e.target.value)}>
                       <option value="">—</option>{meta?.categories.map((c) => <option key={c}>{c}</option>)}

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { db, getSettings, CATEGORIES } from './db.ts';
 import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
-  todayISO, addDays, addMonths, txHash, matchRule, normText, type Frequency, type LoanInputs,
+  todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
 } from './logic.ts';
 
 const app = express();
@@ -351,6 +351,33 @@ app.get('/api/summary', (_req, res) => {
       next: upcoming.slice(0, 8).map((u) => ({ ...u, status: billStatus(u.date, today) })),
     },
   });
+});
+
+// Month-by-month income and spending for the dashboard charts. `months` = how many months back (0 = all history).
+// `owner` = personal | business | all; auto (the default) is personal, or all while there are no personal transactions yet.
+app.get('/api/trends', (req, res) => {
+  const thisMonth = todayISO().slice(0, 7);
+  let owner = str(req.query.owner, 'auto');
+  if (!['personal', 'business', 'all'].includes(owner)) {
+    owner = one("SELECT 1 FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE a.owner = 'personal' AND a.archived = 0 LIMIT 1") ? 'personal' : 'all';
+  }
+  const rows = (all(
+    `SELECT substr(t.date, 1, 7) AS month, COALESCE(t.category, 'Uncategorised') AS category,
+            SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
+            SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS expenses
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE (a.owner = ? OR ? = 'all') AND a.archived = 0 AND COALESCE(t.category, '') <> 'Transfer'
+     GROUP BY month, category ORDER BY month`, owner, owner,
+  ) as unknown as TrendRow[]).map((r) => ({ ...r, income: Number(r.income), expenses: Number(r.expenses) }));
+  const latest = rows.at(-1)?.month ?? thisMonth;
+  const to = latest > thisMonth ? latest : thisMonth;
+  const back = Math.max(0, Math.floor(Number(req.query.months ?? 12)));
+  const earliest = rows[0]?.month ?? to;
+  const windowStart = back ? addMonths(`${to}-01`, -(back - 1)).slice(0, 7) : earliest;
+  const from = windowStart > earliest ? windowStart : earliest; // don't pad with months before the first import
+  const inRange = rows.filter((r) => r.month >= from && r.month <= to);
+  // all rows, not just the range, pick the top categories, so a category keeps its colour across ranges
+  res.json({ ...monthlyTrends(rows, from, to), rows: inRange, latestWithData: rows.at(-1)?.month ?? null, owner });
 });
 
 app.get('/api/networth-history', (_req, res) => {

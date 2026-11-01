@@ -200,3 +200,30 @@ export function matchRule<T extends { pattern: string }>(rules: T[], description
   }
   return best;
 }
+
+export interface TrendRow { month: string; category: string; income: number; expenses: number }
+export interface MonthTrend { month: string; income: number; expenses: number; net: number; savingsRate: number | null; byCategory: Record<string, number> }
+
+/**
+ * Month-by-month income and spending from `from` to `to` (YYYY-MM, inclusive), with empty months filled in.
+ * Spending is split into the `topN` categories by total over all rows (so a category keeps its colour whatever
+ * range is shown), and everything else is folded into "Other".
+ */
+export function monthlyTrends(rows: TrendRow[], from: string, to: string, topN = 6): { months: MonthTrend[]; categories: string[] } {
+  const totals = new Map<string, number>();
+  for (const r of rows) if (r.expenses > 0) totals.set(r.category, (totals.get(r.category) ?? 0) + r.expenses);
+  const top = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, topN).map(([c]) => c);
+  const hasOther = totals.size > top.length;
+  const categories = hasOther ? [...top, 'Other'] : top;
+
+  const months: MonthTrend[] = [];
+  for (let m = from; m <= to; m = addMonths(`${m}-01`, 1).slice(0, 7)) {
+    const mine = rows.filter((r) => r.month === m);
+    const income = mine.reduce((t, r) => t + r.income, 0);
+    const expenses = mine.reduce((t, r) => t + r.expenses, 0);
+    const byCategory: Record<string, number> = Object.fromEntries(categories.map((c) => [c, 0]));
+    for (const r of mine) if (r.expenses > 0) byCategory[top.includes(r.category) ? r.category : 'Other'] += r.expenses;
+    months.push({ month: m, income, expenses, net: income - expenses, savingsRate: income > 0 ? (income - expenses) / income : null, byCategory });
+  }
+  return { months, categories };
+}

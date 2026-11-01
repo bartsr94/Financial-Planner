@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
-  matchRule, occurrencesBetween, parseAmount, parseDate, paymentsMade, txHash,
+  matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseDate, paymentsMade, txHash,
 } from './logic.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -97,4 +97,22 @@ test('rules match Polish capitals and padded text, and the most specific rule wi
   assert.equal(matchRule([{ pattern: 'UŻYCIU KARTY', category: 'X' }], 'zakup przy użyciu   karty')?.category, 'X');
   assert.equal(matchRule(rules, 'Biedronka'), undefined);
   assert.equal(matchRule([{ pattern: '  ', category: 'X' }], 'anything'), undefined);
+});
+
+test('monthly trends fill empty months, fold small categories into Other, and keep colours stable', () => {
+  const rows = [
+    { month: '2026-08', category: 'Groceries', income: 0, expenses: 500 },
+    { month: '2026-08', category: 'Income', income: 8000, expenses: 0 },
+    { month: '2026-10', category: 'Groceries', income: 0, expenses: 300 },
+    { month: '2026-10', category: 'Fees', income: 0, expenses: 20 },
+    { month: '2026-10', category: 'Gym', income: 0, expenses: 10 },
+  ];
+  const t = monthlyTrends(rows, '2026-08', '2026-11', 2);
+  assert.deepEqual(t.categories, ['Groceries', 'Fees', 'Other']);
+  assert.deepEqual(t.months.map((m) => m.month), ['2026-08', '2026-09', '2026-10', '2026-11']);
+  assert.equal(t.months[0].net, 7500);
+  close(t.months[0].savingsRate!, 0.9375);
+  assert.equal(t.months[1].savingsRate, null);
+  assert.deepEqual(t.months[2].byCategory, { Groceries: 300, Fees: 20, Other: 10 });
+  assert.deepEqual(monthlyTrends(rows, '2026-12', '2027-01').months.map((m) => m.month), ['2026-12', '2027-01']);
 });

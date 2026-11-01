@@ -1,98 +1,210 @@
+import { useEffect, useMemo, useState } from 'react';
 import { fmtDate, fmtMoney, fmtPct } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { BarChart, Legend, Sparkline, monthLabel, type Series } from '../charts.tsx';
 
 interface Summary {
   netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number;
-  months: { month: string; income: number; expenses: number }[];
-  byCategory: { category: string; spent: number }[];
   avgMonthlyExpenses: number;
   fire: { fiNumber: number; leanFi: number; fatFi: number; coastFi: number; percentToFi: number; investedCoversYearly: number; coastReached: boolean; returnRate: number };
   bills: { dueNext30Days: number; overdueCount: number; overdueTotal: number; next: { id: number; name: string; amount: number; date: string; status: string }[] };
 }
+interface MonthTrend { month: string; income: number; expenses: number; net: number; savingsRate: number | null; byCategory: Record<string, number> }
+interface Trends {
+  months: MonthTrend[]; categories: string[]; latestWithData: string | null; owner: string;
+  rows: { month: string; category: string; income: number; expenses: number }[];
+}
+
+// Categorical slots in fixed order (see styles.css); "Other" is always the neutral.
+const colorFor = (categories: string[], c: string) => {
+  if (c === 'Uncategorised') return 'var(--series-uncat)';
+  const named = categories.filter((x) => x !== 'Uncategorised' && x !== 'Other');
+  return named.includes(c) ? `var(--series-${named.indexOf(c) + 1})` : 'var(--series-other)';
+};
+const RANGES = [['6', '6M'], ['12', '12M'], ['24', '2Y'], ['0', 'All']] as const;
+const OWNERS = [['personal', 'Personal'], ['business', 'Business'], ['all', 'Both']] as const;
 
 export function Dashboard() {
   const { data: s, error } = useGet<Summary>('/summary');
-  if (error) return <p className="error">{error}</p>;
-  if (!s) return <p className="muted">Loading…</p>;
+  const [range, setRange] = useState(() => localStorage.getItem('range') ?? '12');
+  const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'auto');
+  const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
+  const { data: nw } = useGet<{ month: string; netWorth: number }[]>('/networth-history');
+  const [selected, setSelected] = useState<string | null>(null);
 
-  const lastMonths = s.months.slice(-6);
-  const maxFlow = Math.max(1, ...lastMonths.flatMap((m) => [m.income, m.expenses]));
-  const maxCat = Math.max(1, ...s.byCategory.map((c) => c.spent));
-  const noData = s.netWorth === 0 && s.months.length === 0;
+  // default to the latest month that has transactions, not a still-empty current month
+  useEffect(() => {
+    if (t && (!selected || !t.months.some((m) => m.month === selected))) setSelected(t.latestWithData ?? t.months.at(-1)?.month ?? null);
+  }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const sel = t?.months.findIndex((m) => m.month === selected) ?? -1;
+  const cur = t && sel >= 0 ? t.months[sel] : undefined;
+  const prev = t && sel > 0 ? t.months[sel - 1] : undefined;
+
+  // full category breakdown for the selected month, compared with the month before
+  const breakdown = useMemo(() => {
+    if (!t || !cur) return [];
+    const spentIn = (m?: string) => new Map(t.rows.filter((r) => r.month === m && r.expenses > 0).map((r) => [r.category, r.expenses]));
+    const now = spentIn(cur.month), before = spentIn(prev?.month);
+    return [...now.entries()].sort((a, b) => b[1] - a[1]).map(([category, spent]) => ({ category, spent, before: before.get(category) ?? 0 }));
+  }, [t, cur, prev]);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!s || !t) return <p className="muted">Loading…</p>;
+
+  const months = t.months.map((m) => m.month);
+  const hasFlows = t.months.some((m) => m.income || m.expenses);
+  const flowSeries: Series[] = [
+    { key: 'income', label: 'Income', color: 'var(--income)', values: t.months.map((m) => m.income) },
+    { key: 'expenses', label: 'Spending', color: 'var(--spending)', values: t.months.map((m) => m.expenses) },
+  ];
+  const catSeries: Series[] = t.categories.map((c) => ({ key: c, label: c, color: colorFor(t.categories, c), values: t.months.map((m) => m.byCategory[c] ?? 0) }));
+  const maxCat = Math.max(1, ...breakdown.map((b) => b.spent));
+  const selectMonth = (i: number) => setSelected(months[i]);
+  const pickRange = (r: string) => { setRange(r); localStorage.setItem('range', r); };
+  const pickOwner = (o: string) => { setOwner(o); localStorage.setItem('owner', o); };
+  const noData = s.netWorth === 0 && !hasFlows;
 
   return (
     <>
+      <div className="page-head">
+        <div>
+          <h1>Overview</h1>
+          <div className="sub">{cur ? <>Showing <b>{monthLabel(cur.month, true)}</b>. Click a month in a chart to change it.</> : 'Your money at a glance.'}
+            {t.owner !== 'personal' && <> Charts include the business account.</>}</div>
+        </div>
+        <div className="filters">
+          <div className="segmented" role="group" aria-label="Whose money">
+            {OWNERS.map(([v, label]) => <button key={v} className={t.owner === v ? 'on' : ''} onClick={() => pickOwner(v)}>{label}</button>)}
+          </div>
+          <div className="segmented" role="group" aria-label="Range">
+            {RANGES.map(([v, label]) => <button key={v} className={range === v ? 'on' : ''} onClick={() => pickRange(v)}>{label}</button>)}
+          </div>
+        </div>
+      </div>
+
       {noData && (
-        <div className="card" style={{ marginBottom: 12 }}>
-          Nothing here yet. Add your accounts on the <b>Accounts</b> tab, your recurring bills on <b>Bills</b>, and import
-          a bank statement on <b>Import</b>.
+        <div className="card callout">
+          Nothing here yet. Add your accounts on <b>Accounts</b>, recurring bills on <b>Bills</b>, and import a bank statement on <b>Import</b>.
         </div>
       )}
-      <div className="grid">
-        <div className="card"><h2>Net worth</h2><div className="big">{fmtMoney(s.netWorth)}</div>
-          <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}</div>
-          <div className="sub">Assets {fmtMoney(s.assets)} · Debt {fmtMoney(s.debt)}</div></div>
-        <div className="card"><h2>Bills, next 30 days</h2><div className="big">{fmtMoney(s.bills.dueNext30Days)}</div>
-          {s.bills.overdueCount > 0
-            ? <div className="sub bad">{s.bills.overdueCount} overdue ({fmtMoney(s.bills.overdueTotal)})</div>
-            : <div className="sub good">Nothing overdue</div>}</div>
-        <div className="card"><h2>Progress to FI</h2><div className="big">{fmtPct(s.fire.percentToFi)}</div>
-          <div className="bar" style={{ margin: '6px 0' }}><div style={{ width: `${Math.min(100, s.fire.percentToFi * 100)}%` }} /></div>
-          <div className="sub">FI number {fmtMoney(s.fire.fiNumber)} · based on {fmtMoney(s.avgMonthlyExpenses)}/mo spending</div></div>
-        <div className="card"><h2>Business cash</h2><div className="big">{fmtMoney(s.businessCash)}</div>
-          <div className="sub">Kept out of net worth and spending</div></div>
+
+      <div className="kpis">
+        <div className="card kpi">
+          <h2>Net worth</h2>
+          <div className="kpi-row"><div className="big">{fmtMoney(s.netWorth)}</div><Sparkline values={(nw ?? []).map((p) => p.netWorth)} /></div>
+          <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}{s.debt ? ` · Debt ${fmtMoney(s.debt)}` : ''}</div>
+          {s.businessCash !== 0 && <div className="sub">Business cash {fmtMoney(s.businessCash)}, kept out of this</div>}
+        </div>
+        <Kpi title="Income" value={cur?.income} before={prev?.income} goodWhenUp />
+        <Kpi title="Spending" value={cur?.expenses} before={prev?.expenses} goodWhenUp={false} />
+        <div className="card kpi">
+          <h2>Saved</h2>
+          <div className="big">{cur ? fmtMoney(cur.net) : '–'}</div>
+          <div className="sub">{cur?.savingsRate != null ? <>Savings rate <b>{fmtPct(cur.savingsRate)}</b></> : 'No income this month'}</div>
+        </div>
       </div>
 
-      <div className="grid">
-        <div className="card"><h2>Upcoming bills</h2>
+      <div className="card">
+        <div className="card-head">
+          <h2>Income and spending by month</h2>
+          <Legend items={flowSeries.map((x) => ({ label: x.label, color: x.color }))} />
+        </div>
+        {hasFlows
+          ? <BarChart months={months} series={flowSeries} format={fmtMoney} selected={sel} onSelect={selectMonth} height={260}
+              tooltipExtra={(i) => <div className="tt-row total"><span /><span>Saved</span><b>{fmtMoney(t.months[i].net)}</b></div>} />
+          : <Empty />}
+      </div>
+
+      <div className="cols-2">
+        <div className="card">
+          <div className="card-head">
+            <h2>Saved each month</h2>
+            <Legend items={[{ label: 'Saved', color: 'var(--income)' }, { label: 'Overspent', color: 'var(--spending)' }]} />
+          </div>
+          {hasFlows
+            ? <BarChart months={months} series={[{ key: 'net', label: 'Saved', color: 'var(--income)', values: t.months.map((m) => m.net) }]}
+                colorOf={(v) => (v >= 0 ? 'var(--income)' : 'var(--spending)')} format={fmtMoney} selected={sel} onSelect={selectMonth} height={200}
+                tooltipExtra={(i) => t.months[i].savingsRate != null && <div className="tt-row total"><span /><span>Savings rate</span><b>{fmtPct(t.months[i].savingsRate!)}</b></div>} />
+            : <Empty />}
+        </div>
+        <div className="card">
+          <div className="card-head"><h2>Where the money went</h2></div>
+          {catSeries.length
+            ? <>
+                <BarChart months={months} series={catSeries} stacked format={fmtMoney} selected={sel} onSelect={selectMonth} height={200} />
+                <Legend items={catSeries.map((x) => ({ label: x.label, color: x.color }))} />
+              </>
+            : <Empty />}
+        </div>
+      </div>
+
+      <div className="cols-3">
+        <div className="card">
+          <h2>Spending in {cur ? monthLabel(cur.month, true) : '…'}</h2>
+          {breakdown.length === 0 ? <div className="muted">No spending recorded in this month.</div> : (
+            <table className="cat-table"><tbody>
+              {breakdown.slice(0, 10).map((b) => {
+                const delta = b.spent - b.before;
+                return (
+                  <tr key={b.category}>
+                    <td className="cat-name"><span className="swatch" style={{ background: colorFor(t.categories, b.category) }} />{b.category}</td>
+                    <td className="cat-bar"><div className="bar"><div style={{ width: `${(b.spent / maxCat) * 100}%` }} /></div></td>
+                    <td className="num">{fmtMoney(b.spent)}</td>
+                    <td className="num delta">{prev && Math.abs(delta) >= 1
+                      ? <span className={delta > 0 ? 'bad' : 'good'} title={`${fmtMoney(b.before)} in ${monthLabel(prev.month)}`}>{delta > 0 ? '▲' : '▼'} {fmtMoney(Math.abs(delta))}</span>
+                      : <span className="muted">–</span>}</td>
+                  </tr>);
+              })}
+            </tbody></table>)}
+          {prev && breakdown.length > 0 && <div className="sub">Arrows compare with {monthLabel(prev.month, true)}.</div>}
+        </div>
+
+        <div className="card">
+          <div className="card-head"><h2>Upcoming bills</h2><span className="muted small">{fmtMoney(s.bills.dueNext30Days)} in 30 days</span></div>
+          {s.bills.overdueCount > 0 && <div className="callout bad-callout">⚠ {s.bills.overdueCount} overdue, {fmtMoney(s.bills.overdueTotal)}</div>}
           {s.bills.next.length === 0 ? <div className="muted">No bills set up.</div> : (
-            <table><tbody>
+            <ul className="bill-list">
               {s.bills.next.map((b, i) => (
-                <tr key={`${b.id}-${i}`}>
-                  <td>{b.name} {b.status !== 'upcoming' && <span className={`pill ${b.status}`}>{b.status === 'overdue' ? 'overdue' : 'soon'}</span>}</td>
-                  <td className="muted">{fmtDate(b.date)}</td><td className="num">{fmtMoney(b.amount)}</td>
-                </tr>))}
-            </tbody></table>)}
+                <li key={`${b.id}-${i}`}>
+                  <div className="date-chip"><b>{Number(b.date.slice(8, 10))}</b><span>{monthLabel(b.date.slice(0, 7))}</span></div>
+                  <div className="bill-name">{b.name}{b.status !== 'upcoming' && <span className={`pill ${b.status}`}>{b.status === 'overdue' ? 'overdue' : 'soon'}</span>}
+                    <div className="sub">{fmtDate(b.date)}</div></div>
+                  <div className="num">{fmtMoney(b.amount)}</div>
+                </li>))}
+            </ul>)}
         </div>
-        <div className="card"><h2>Income vs spending</h2>
-          {lastMonths.length === 0 ? <div className="muted">Import a statement to see this.</div> : (
-            <table><tbody>
-              {lastMonths.map((m) => (
-                <tr key={m.month}>
-                  <td style={{ width: 70 }}>{m.month}</td>
-                  <td>
-                    <div className="bar" style={{ marginBottom: 3 }}><div style={{ width: `${(m.income / maxFlow) * 100}%`, background: 'var(--good)' }} /></div>
-                    <div className="bar"><div style={{ width: `${(m.expenses / maxFlow) * 100}%`, background: 'var(--bad)' }} /></div>
-                  </td>
-                  <td className="num" style={{ width: 90 }}><span className="good">{fmtMoney(m.income)}</span><br /><span className="bad">{fmtMoney(m.expenses)}</span></td>
-                </tr>))}
-            </tbody></table>)}
-        </div>
-      </div>
 
-      <div className="grid">
-        <div className="card"><h2>Spending this month</h2>
-          {s.byCategory.length === 0 ? <div className="muted">No spending recorded this month.</div> : (
-            <table><tbody>
-              {s.byCategory.slice(0, 10).map((c) => (
-                <tr key={c.category}>
-                  <td style={{ width: 130 }}>{c.category}</td>
-                  <td><div className="bar"><div style={{ width: `${(c.spent / maxCat) * 100}%` }} /></div></td>
-                  <td className="num" style={{ width: 90 }}>{fmtMoney(c.spent)}</td>
-                </tr>))}
-            </tbody></table>)}
-        </div>
-        <div className="card"><h2>FIRE targets</h2>
-          <table><tbody>
+        <div className="card">
+          <h2>Financial independence</h2>
+          <div className="big">{fmtPct(s.fire.percentToFi)}</div>
+          <div className="progress"><div style={{ width: `${Math.min(100, s.fire.percentToFi * 100)}%` }} /></div>
+          <div className="sub">of {fmtMoney(s.fire.fiNumber)}, based on {fmtMoney(s.avgMonthlyExpenses)}/month spending</div>
+          <table className="compact"><tbody>
             <tr><td>Lean FIRE (80%)</td><td className="num">{fmtMoney(s.fire.leanFi)}</td></tr>
             <tr><td>FIRE</td><td className="num">{fmtMoney(s.fire.fiNumber)}</td></tr>
             <tr><td>Fat FIRE (2×)</td><td className="num">{fmtMoney(s.fire.fatFi)}</td></tr>
             <tr><td>Coast FI today</td><td className="num">{fmtMoney(s.fire.coastFi)} {s.fire.coastReached && <span className="good">✓</span>}</td></tr>
             <tr><td>Investments cover per year</td><td className="num">{fmtMoney(s.fire.investedCoversYearly)}</td></tr>
           </tbody></table>
-          <div className="sub">Assumed return {fmtPct(s.fire.returnRate)} · change in Settings</div>
+          <div className="sub">Assumed return {fmtPct(s.fire.returnRate)}, change it in Settings</div>
         </div>
       </div>
     </>
   );
 }
+
+function Kpi({ title, value, before, goodWhenUp }: { title: string; value?: number; before?: number; goodWhenUp: boolean }) {
+  const delta = value !== undefined && before ? (value - before) / before : null;
+  const good = delta !== null && (delta >= 0) === goodWhenUp;
+  return (
+    <div className="card kpi">
+      <h2>{title}</h2>
+      <div className="big">{value !== undefined ? fmtMoney(value) : '–'}</div>
+      <div className="sub">{delta === null ? 'No earlier month to compare'
+        : <><span className={good ? 'good' : 'bad'}>{delta >= 0 ? '▲' : '▼'} {fmtPct(Math.abs(delta))}</span> vs last month</>}</div>
+    </div>
+  );
+}
+
+const Empty = () => <div className="empty">Import a bank statement to see this.</div>;
