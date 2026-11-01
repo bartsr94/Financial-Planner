@@ -6,7 +6,7 @@ import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
   todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
   balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine,
-  findRecurring, type RecurringLine, forecastCash,
+  findRecurring, type RecurringLine, forecastCash, explainChange, unusualCategories, businessMonths, type BusinessRow,
 } from './logic.ts';
 import { merchantKey } from '../shared/merchant.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
@@ -506,6 +506,41 @@ app.get('/api/forecast', async (req, res) => {
   });
 });
 
+// What stands out in a month: categories well off their usual, the biggest single payments, and how much goes on
+// payments that recur on a schedule.
+app.get('/api/insights', async (req, res) => {
+  await ensureRates();
+  const month = str(req.query.month);
+  if (!/^\d{4}-\d{2}$/.test(month)) return bad(res, 'month (YYYY-MM) required');
+  const asked = str(req.query.owner, 'all');
+  const owner = ['personal', 'business'].includes(asked) ? asked : 'all';
+  const ownerSql = owner === 'all' ? '' : 'AND a.owner = ?';
+  const ownerArg = owner === 'all' ? [] : [owner];
+  const base = `FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE a.archived = 0 AND t.amount < 0 AND COALESCE(t.category, '') <> 'Transfer' ${ownerSql}`;
+  const rows = all(
+    `SELECT substr(t.date, 1, 7) AS month, COALESCE(t.category, 'Uncategorised') AS category, SUM(-${plnSql('t.amount', 't.date')}) AS expenses
+     ${base} AND t.date >= ? AND t.date <= ? GROUP BY month, category`,
+    ...ownerArg, addMonths(`${month}-01`, -6), monthEnd(month),
+  ) as (Row & { month: string; category: string; expenses: number })[];
+  const biggest = all(
+    `SELECT t.id, t.date, t.description, COALESCE(t.category, 'Uncategorised') AS category, -${plnSql('t.amount', 't.date')} AS amount, a.name AS account
+     ${base} AND substr(t.date, 1, 7) = ? ORDER BY amount DESC LIMIT 5`, ...ownerArg, month,
+  );
+  const recent = all(
+    `SELECT t.date, t.description, t.category, ${plnSql('t.amount', 't.date')} AS pln ${base} AND t.date >= ?`,
+    ...ownerArg, addMonths(todayISO(), -18),
+  ) as (Row & { date: string; description: string; category: string | null; pln: number | null })[];
+  const recurring = findRecurring(recent.filter((r) => r.pln !== null)
+    .map((r) => ({ key: merchantKey(r.description) || r.description, date: r.date, amount: Number(r.pln), category: r.category })), todayISO());
+  res.json({
+    month, owner,
+    unusual: unusualCategories(rows.map((r) => ({ month: r.month, category: r.category, expenses: Number(r.expenses) })), month).slice(0, 6),
+    biggest,
+    recurring: { count: recurring.length, monthly: recurring.reduce((t, r) => t + r.monthly, 0), top: recurring.slice(0, 5) },
+  });
+});
+
 // Month-by-month income and spending for the dashboard charts. `months` = how many months back (0 = all history).
 // `owner` = personal | business | all (the default).
 app.get('/api/trends', async (req, res) => {
@@ -617,36 +652,99 @@ const rateOn = db.prepare(`SELECT ${rateSql('$cur', '$date')} AS rate`);
  * Accounts with transactions are worked back from today's balance; the rest carry their last recorded
  * monthly balance forward until a newer one.
  */
-app.get('/api/networth-history', async (_req, res) => {
-  await ensureRates();
-  const accounts = all('SELECT id, kind, currency, balance FROM accounts WHERE archived = 0');
+// Each open account's month-end balance in its own currency, and the PLN rate at each month end.
+function accountHistories(months: string[]) {
+  const accounts = all('SELECT id, name, kind, owner, currency, balance FROM accounts WHERE archived = 0');
   const tx = all('SELECT t.account_id, t.date, t.amount FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE a.archived = 0');
   const snaps = all('SELECT s.account_id, s.month, s.balance FROM balance_snapshots s JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0');
-  const thisMonth = todayISO().slice(0, 7);
-  const first = [...tx.map((t) => String(t.date).slice(0, 7)), ...snaps.map((s) => String(s.month))].sort()[0] ?? thisMonth;
-  const months = monthsBetween(first, thisMonth);
-
   const rates = new Map<string, number[]>();
-  const rate = (cur: string, i: number) => {
+  const ratesOf = (cur: string) => {
     if (!rates.has(cur)) rates.set(cur, months.map((m) => Number((rateOn.get({ cur, date: monthEnd(m) }) as { rate: number | null }).rate ?? 0)));
-    return rates.get(cur)![i];
+    return rates.get(cur)!;
   };
-  const KEY: Record<string, 'cash' | 'investments' | 'assets' | 'debt'> = { cash: 'cash', investment: 'investments', asset: 'assets', debt: 'debt' };
-  const out = months.map((month) => ({ month, cash: 0, investments: 0, assets: 0, debt: 0, netWorth: 0 }));
-  for (const a of accounts) {
-    const history = balanceHistory(
+  return accounts.map((a) => ({
+    id: Number(a.id), name: String(a.name), kind: String(a.kind), owner: String(a.owner), currency: String(a.currency),
+    rates: ratesOf(String(a.currency)),
+    balances: balanceHistory(
       months, Number(a.balance),
       tx.filter((t) => t.account_id === a.id).map((t) => ({ date: String(t.date), amount: Number(t.amount) })),
       snaps.filter((s) => s.account_id === a.id).map((s) => ({ month: String(s.month), balance: Number(s.balance) })),
-    );
-    history.forEach((bal, i) => {
+    ),
+  }));
+}
+
+// Tax payments that arrive uncategorised: the tax office, ZUS, and mBank's VAT split-payment transfers.
+const TAX_PATTERNS = ['%URZĄD SKARBOWY%', '%URZAD SKARBOWY%', '%PRZELEW PODATKOWY%', '%PRZELEW VAT%', '%ZUS%'];
+
+// The business accounts month by month: revenue, costs, taxes, what was paid out to you, and the cash left.
+app.get('/api/business', async (req, res) => {
+  await ensureRates();
+  const thisMonth = todayISO().slice(0, 7);
+  const back = Math.max(1, Math.floor(Number(req.query.months ?? 12)) || 12);
+  const months = monthsBetween(addMonths(`${thisMonth}-01`, -(back - 1)).slice(0, 7), thisMonth);
+  const taxSql = TAX_PATTERNS.map(() => 't.description LIKE ?').join(' OR ');
+  const rows = (all(
+    `SELECT substr(t.date, 1, 7) AS month, COALESCE(t.category, 'Uncategorised') AS category,
+            CASE WHEN t.category = 'Transfer' THEN 'transfer' WHEN t.amount > 0 THEN 'revenue'
+                 WHEN t.category = 'Taxes' OR ${taxSql} THEN 'tax' ELSE 'cost' END AS bucket,
+            SUM(${plnSql('t.amount', 't.date')}) AS amount
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE a.owner = 'business' AND a.archived = 0 AND t.date >= ?
+     GROUP BY month, bucket, category`, ...TAX_PATTERNS, `${months[0]}-01`,
+  ) as (Row & BusinessRow)[]).map((r) => ({ month: r.month, bucket: r.bucket, category: r.category, amount: Number(r.amount ?? 0) }));
+  const cashAccounts = accountHistories(months).filter((a) => a.owner === 'business' && a.kind === 'cash');
+  const cash = months.map((_, i) => cashAccounts.reduce((t, a) => t + (a.balances[i] ?? 0) * a.rates[i], 0));
+  const costs = new Map<string, number>();
+  for (const r of rows.filter((r) => r.bucket === 'cost')) costs.set(r.category, (costs.get(r.category) ?? 0) - r.amount);
+  res.json({
+    months: businessMonths(rows, months).map((m, i) => ({ ...m, cash: cash[i] })),
+    costsByCategory: [...costs].map(([category, amount]) => ({ category, amount })).filter((c) => Math.abs(c.amount) >= 1).sort((a, b) => b.amount - a.amount),
+  });
+});
+
+app.get('/api/networth-history', async (_req, res) => {
+  await ensureRates();
+  const tx = all('SELECT MIN(t.date) AS d FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE a.archived = 0');
+  const snaps = all('SELECT MIN(s.month) AS m FROM balance_snapshots s JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0');
+  const thisMonth = todayISO().slice(0, 7);
+  const first = [tx[0]?.d ? String(tx[0].d).slice(0, 7) : null, snaps[0]?.m ? String(snaps[0].m) : null]
+    .filter((x): x is string => !!x).sort()[0] ?? thisMonth;
+  const months = monthsBetween(first, thisMonth);
+  const KEY: Record<string, 'cash' | 'investments' | 'assets' | 'debt'> = { cash: 'cash', investment: 'investments', asset: 'assets', debt: 'debt' };
+  const out = months.map((month) => ({ month, cash: 0, investments: 0, assets: 0, debt: 0, netWorth: 0 }));
+  for (const a of accountHistories(months)) {
+    a.balances.forEach((bal, i) => {
       if (bal === null) return;
-      const pln = bal * rate(String(a.currency), i);
-      out[i][KEY[String(a.kind)]] += pln;
+      const pln = bal * a.rates[i];
+      out[i][KEY[a.kind]] += pln;
       out[i].netWorth += pln;
     });
   }
   res.json(out);
+});
+
+// Why net worth moved in a month: each account's change, split into what moved in the account and what the
+// exchange rate did to the balance it already had, plus that month's income and spending.
+app.get('/api/networth-change', async (req, res) => {
+  await ensureRates();
+  const month = str(req.query.month);
+  if (!/^\d{4}-\d{2}$/.test(month)) return bad(res, 'month (YYYY-MM) required');
+  const prev = addMonths(`${month}-01`, -1).slice(0, 7);
+  const accounts = accountHistories([prev, month]).map((a) => {
+    const change = explainChange(a.balances[0], a.balances[1], a.rates[0], a.rates[1]);
+    return { id: a.id, name: a.name, kind: a.kind, owner: a.owner, currency: a.currency, ...change };
+  }).filter((a) => Math.abs(a.total) >= 0.5);
+  const flows = one(
+    `SELECT SUM(CASE WHEN t.amount > 0 THEN ${plnSql('t.amount', 't.date')} ELSE 0 END) AS income,
+            SUM(CASE WHEN t.amount < 0 THEN -${plnSql('t.amount', 't.date')} ELSE 0 END) AS expenses
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE a.archived = 0 AND substr(t.date, 1, 7) = ? AND COALESCE(t.category, '') <> 'Transfer'`, month,
+  );
+  res.json({
+    month, prev, accounts: accounts.sort((a, b) => Math.abs(b.total) - Math.abs(a.total)),
+    total: accounts.reduce((t, a) => t + a.total, 0),
+    income: Number(flows?.income ?? 0), expenses: Number(flows?.expenses ?? 0),
+  });
 });
 
 // ------------------------------------------------------------------ static UI (after `npm run build`)

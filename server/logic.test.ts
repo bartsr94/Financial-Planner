@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
   dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
-  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine, findRecurring, type RecurringLine, forecastCash,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine, findRecurring, type RecurringLine, forecastCash, explainChange, unusualCategories, businessMonths, type BusinessRow,
 } from './logic.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
+import { projectFire } from '../shared/fire.ts';
+import { payoff } from '../shared/loan.ts';
 import { merchantKey } from '../shared/merchant.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -249,4 +251,62 @@ test('cash forecast: median month, and only the rest of this month', () => {
   assert.equal(f.income, 12000);
   assert.equal(f.spending, 8000);
   assert.deepEqual(f.months.map((m) => [m.month, m.balance]), [['2026-11', 52000], ['2026-12', 56000], ['2027-01', 60000]]);
+});
+
+test('net worth change: what moved, and what the exchange rate did', () => {
+  // 1,000 EUR at 4.20 becomes 1,100 EUR at 4.30: 100 EUR moved (430 zł) and the old 1,000 gained 100 zł
+  const c = explainChange(1000, 1100, 4.2, 4.3);
+  assert.equal(Math.round(c.moved), 430);
+  assert.equal(Math.round(c.fx), 100);
+  assert.equal(Math.round(c.total), 530);
+  assert.deepEqual(explainChange(null, 500, 0, 1), { moved: 500, fx: 0, total: 500 });
+});
+
+test('unusual categories: well above or below the median of the months before', () => {
+  const rows = ['2026-04', '2026-05', '2026-06', '2026-07', '2026-08', '2026-09'].flatMap((m) => [
+    { month: m, category: 'Eating Out', expenses: 1000 }, { month: m, category: 'Groceries', expenses: 2000 }, { month: m, category: 'Fees', expenses: 50 },
+  ]);
+  rows.push({ month: '2026-10', category: 'Eating Out', expenses: 2500 }, { month: '2026-10', category: 'Groceries', expenses: 2100 },
+    { month: '2026-10', category: 'Fees', expenses: 200 });
+  const u = unusualCategories(rows, '2026-10');
+  // Groceries is only 5% up, Fees 150 zł up, and missing Fees would be a 0; Eating Out stands out
+  assert.deepEqual(u.map((x) => [x.category, x.diff]), [['Eating Out', 1500]]);
+});
+
+test('FIRE path: monthly additions compound, and the month the FI number is reached', () => {
+  // no growth: 10,000 plus 1,000 a month reaches 34,000 after two years, and 30,000 in month 20
+  const flat = projectFire(10000, 1000, 0, 30000, 2);
+  assert.deepEqual(flat.values, [10000, 22000, 34000]);
+  assert.equal(flat.fiMonths, 20);
+  // 12% a year compounded monthly grows 100,000 to 112,000 in a year, give or take rounding
+  assert.equal(Math.round(projectFire(100000, 0, 0.12, 0, 1).values[1]), 112000);
+  assert.equal(projectFire(1000, 0, 0.05, 1e9, 3).fiMonths, null);
+  assert.equal(projectFire(5000, 0, 0.05, 4000, 1).fiMonths, 0);
+});
+
+test('mortgage payoff: overpaying shortens the loan and saves interest', () => {
+  // 100,000 at 6% over 20 years: the same payment from the start repays it in 240 payments, with amortize's interest
+  const pmt = monthlyPayment(100000, 0.06, 20);
+  const plain = payoff(100000, 0.06, pmt);
+  assert.equal(plain.payments, 240);
+  assert.equal(Math.round(plain.interest), Math.round(amortize({ principal: 100000, apr: 0.06, years: 20, extraMonthly: 0 }).totalInterest));
+  const more = payoff(100000, 0.06, pmt, 200);
+  assert.ok(more.payments < 180 && more.interest < plain.interest * 0.75);
+  assert.ok(payoff(100000, 0.06, pmt, 0, 20000).payments < 200);
+  assert.deepEqual(payoff(0, 0.06, pmt), { payments: 0, interest: 0 });
+});
+
+test('business months: revenue less costs, taxes and what was paid out', () => {
+  const rows: BusinessRow[] = [
+    { month: '2026-09', bucket: 'revenue', category: 'Salary', amount: 30000 },
+    { month: '2026-09', bucket: 'cost', category: 'Software', amount: -1000 },
+    { month: '2026-09', bucket: 'tax', category: 'Taxes', amount: -6000 },
+    // 10,000 to the owner, and 5,000 between two business accounts that cancels
+    { month: '2026-09', bucket: 'transfer', category: 'Transfer', amount: -15000 },
+    { month: '2026-09', bucket: 'transfer', category: 'Transfer', amount: 5000 },
+  ];
+  assert.deepEqual(businessMonths(rows, ['2026-09', '2026-10']), [
+    { month: '2026-09', revenue: 30000, costs: 1000, taxes: 6000, paidOut: 10000, kept: 13000 },
+    { month: '2026-10', revenue: 0, costs: 0, taxes: 0, paidOut: 0, kept: 0 },
+  ]);
 });

@@ -104,6 +104,8 @@ export function fireSummary(i: FireInputs) {
     fatFi: fiNumber * 2,
     coastFi,
     returnRate: rate,
+    currentAge: i.currentAge,
+    retirementAge: i.retirementAge,
     percentToFi: fiNumber > 0 ? i.investments / fiNumber : 0,
     investedCoversYearly: i.investments * i.withdrawalRate,
     coastReached: i.investments >= coastFi,
@@ -417,4 +419,54 @@ export function forecastCash(start: number, history: { income: number; expenses:
     months.push({ month: addMonths(`${first}-01`, i).slice(0, 7), income: income * share, spending: spending * share, balance });
   }
   return { income, spending, months };
+}
+
+/**
+ * One account's change in PLN between two month ends. `moved` is the change in the balance itself, at the new
+ * rate; `fx` is what the rate change did to the old balance. A balance first known in the later month counts as
+ * moved in full.
+ */
+export function explainChange(before: number | null, after: number | null, rateBefore: number, rateAfter: number):
+  { moved: number; fx: number; total: number } {
+  if (after === null) return { moved: 0, fx: 0, total: 0 };
+  const b = before ?? 0;
+  const moved = (after - b) * rateAfter;
+  const fx = before === null ? 0 : b * (rateAfter - rateBefore);
+  return { moved, fx, total: moved + fx };
+}
+
+export interface Unusual { category: string; spent: number; usual: number; diff: number }
+
+/**
+ * Categories whose spending in `month` is well off their usual: the median of the `back` months before it, a month
+ * with nothing counting as 0. Off means at least 25% and 300 zł either way. Biggest difference first.
+ */
+export function unusualCategories(rows: { month: string; category: string; expenses: number }[], month: string, back = 6): Unusual[] {
+  const before = Array.from({ length: back }, (_, i) => addMonths(`${month}-01`, -(i + 1)).slice(0, 7));
+  const cats = new Set(rows.filter((r) => r.month === month || before.includes(r.month)).map((r) => r.category));
+  const spentIn = (c: string, m: string) => rows.filter((r) => r.category === c && r.month === m).reduce((t, r) => t + r.expenses, 0);
+  const out: Unusual[] = [];
+  for (const c of cats) {
+    const spent = spentIn(c, month);
+    const usual = median(before.map((m) => spentIn(c, m)));
+    const diff = spent - usual;
+    if (Math.abs(diff) >= 300 && Math.abs(diff) >= usual * 0.25) out.push({ category: c, spent, usual, diff });
+  }
+  return out.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+}
+
+export type BusinessBucket = 'revenue' | 'cost' | 'tax' | 'transfer';
+export interface BusinessRow { month: string; bucket: BusinessBucket; category: string; amount: number }
+export interface BusinessMonth { month: string; revenue: number; costs: number; taxes: number; paidOut: number; kept: number }
+
+/**
+ * A business's months from its signed lines in złoty. Paid out is what transfers moved out of the business accounts,
+ * net of what came back, so moves between two business accounts cancel. Kept is what is left of revenue after all three.
+ */
+export function businessMonths(rows: BusinessRow[], months: string[]): BusinessMonth[] {
+  return months.map((month) => {
+    const sum = (b: BusinessBucket) => rows.filter((r) => r.month === month && r.bucket === b).reduce((t, r) => t + r.amount, 0);
+    const revenue = sum('revenue'), costs = 0 - sum('cost'), taxes = 0 - sum('tax'), paidOut = 0 - sum('transfer');
+    return { month, revenue, costs, taxes, paidOut, kept: revenue - costs - taxes - paidOut };
+  });
 }

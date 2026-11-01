@@ -183,10 +183,12 @@ interface LineChartProps {
   zeroBased?: boolean;
   /** extra lines under the series values in the tooltip */
   tooltipExtra?: (i: number) => ReactNode;
+  /** labels for points that aren't months, short for the axis and full for the tooltip */
+  xLabel?: (i: number, full: boolean) => string;
 }
 
 /** Monthly lines on one axis, with a crosshair and a tooltip listing every series at the hovered month. */
-export function LineChart({ months, series, height = 260, format, zeroBased = true, tooltipExtra }: LineChartProps) {
+export function LineChart({ months, series, height = 260, format, zeroBased = true, tooltipExtra, xLabel }: LineChartProps) {
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
@@ -223,9 +225,9 @@ export function LineChart({ months, series, height = 260, format, zeroBased = tr
               <text x={pad.l - 8} y={y(t)} dy="0.32em" textAnchor="end" className="tick">{compact.format(t)}</text>
             </g>
           ))}
-          {months.map((m, i) => (i % labelEvery === 0 || i === n - 1) && (
+          {months.map((m, i) => ((i % labelEvery === 0 && n - 1 - i >= labelEvery / 2) || i === n - 1) && (
             <text key={m} x={x(i)} y={height - 8} textAnchor="middle" className={hover === i ? 'tick strong' : 'tick'}>
-              {monthLabel(m)}{(i === 0 || m.endsWith('-01')) && n > 1 ? ` ’${m.slice(2, 4)}` : ''}
+              {xLabel ? xLabel(i, false) : <>{monthLabel(m)}{(i === 0 || m.endsWith('-01')) && n > 1 ? ` ’${m.slice(2, 4)}` : ''}</>}
             </text>
           ))}
           {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + plotH} className="crosshair" />}
@@ -245,7 +247,7 @@ export function LineChart({ months, series, height = 260, format, zeroBased = tr
       )}
       {hover !== null && (
         <div className="tooltip" style={{ left: tipLeft, transform: tipLeft > width * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)' }}>
-          <div className="tt-title">{monthLabel(months[hover], true)}</div>
+          <div className="tt-title">{xLabel ? xLabel(hover, true) : monthLabel(months[hover], true)}</div>
           {series.filter((s) => s.values[hover] !== null || series.length === 1).map((s) => (
             <div className="tt-row" key={s.key}>
               <span className="swatch" style={{ background: s.color }} />

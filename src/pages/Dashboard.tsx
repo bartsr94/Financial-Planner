@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fmtDate, fmtMoney, fmtPct } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { projectFire } from '../../shared/fire.ts';
 import { BarChart, Legend, LineChart, Sparkline, monthLabel, type LineSeries, type Series } from '../charts.tsx';
 
 interface Summary {
   netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number; missingRates: string[];
   avgMonthlyExpenses: number;
-  fire: { fiNumber: number; leanFi: number; fatFi: number; coastFi: number; percentToFi: number; investedCoversYearly: number; coastReached: boolean; returnRate: number };
+  fire: Fire;
   bills: { dueNext30Days: number; overdueCount: number; overdueTotal: number; next: { id: number; name: string; amount: number; date: string; status: string }[] };
+}
+interface Fire {
+  fiNumber: number; leanFi: number; fatFi: number; coastFi: number; percentToFi: number; investedCoversYearly: number;
+  coastReached: boolean; returnRate: number; currentAge: number; retirementAge: number;
 }
 interface MonthTrend { month: string; income: number; expenses: number; net: number; savingsRate: number | null; byCategory: Record<string, number> }
 interface Trends {
@@ -175,6 +180,13 @@ export function Dashboard() {
         </div>
       )}
 
+      {cur && (
+        <div className="cols-2">
+          <WhatChanged month={cur.month} label={monthLabel(cur.month, true) + soFar(cur.month)} />
+          <StoodOut month={cur.month} owner={owner} label={monthLabel(cur.month, true) + soFar(cur.month)} />
+        </div>
+      )}
+
       {fc && (
         <div className="cols-2">
           <div className="card">
@@ -301,6 +313,8 @@ export function Dashboard() {
           <div className="sub">Assumed return {fmtPct(s.fire.returnRate)}, change it in Settings</div>
         </div>
       </div>
+
+      <FirePathCard fire={s.fire} invested={s.investments} savedMonths={t.months.filter((m) => m.month < thisMonth).slice(-12).map((m) => m.net)} />
     </>
   );
 }
@@ -314,6 +328,143 @@ function Kpi({ title, value, before, goodWhenUp }: { title: string; value?: numb
       <div className="big">{value !== undefined ? fmtMoney(value) : '–'}</div>
       <div className="sub">{delta === null ? 'No earlier month to compare'
         : <><span className={good ? 'good' : 'bad'}>{delta >= 0 ? '▲' : '▼'} {fmtPct(Math.abs(delta))}</span> vs last month</>}</div>
+    </div>
+  );
+}
+
+interface Change {
+  month: string; prev: string; total: number; income: number; expenses: number;
+  accounts: { id: number; name: string; kind: string; currency: string; moved: number; fx: number; total: number }[];
+}
+
+const signed = (v: number) => `${v >= 0 ? '+' : '−'}${fmtMoney(Math.abs(v))}`;
+
+/** A month's net worth change, account by account, with exchange-rate moves apart from money moved. */
+function WhatChanged({ month, label }: { month: string; label: string }) {
+  const { data: c } = useGet<Change>(`/networth-change?month=${month}`);
+  if (!c || c.month !== month) return <div className="card"><h2>What changed in {label}</h2><div className="muted">Loading…</div></div>;
+  const fx = c.accounts.reduce((t, a) => t + a.fx, 0);
+  const saved = c.income - c.expenses;
+  const shown = c.accounts.slice(0, 8);
+  const rest = c.accounts.slice(8).reduce((t, a) => t + a.moved, 0);
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <h2>What changed in {label}</h2>
+          <div className="sub">Net worth <b className={c.total >= 0 ? 'good' : 'bad'}>{signed(c.total)}</b> on {monthLabel(c.prev, true)}</div>
+        </div>
+      </div>
+      <table className="compact"><tbody>
+        <tr><td>Income less spending</td><td className="num"><b>{signed(saved)}</b></td></tr>
+        {Math.abs(fx) >= 1 && <tr><td>Exchange rates</td><td className="num">{signed(fx)}</td></tr>}
+      </tbody></table>
+      {shown.length === 0 ? <div className="muted">No balances changed.</div> : (
+        <table className="compact change-table">
+          <thead><tr><th>Account</th><th className="num">Balance moved</th><th className="num">Rate</th></tr></thead>
+          <tbody>
+            {shown.map((a) => (
+              <tr key={a.id}>
+                <td>{a.name}{a.currency !== 'PLN' && <span className="muted small"> {a.currency}</span>}</td>
+                <td className={`num ${a.moved >= 0 ? 'good' : 'bad'}`}>{Math.abs(a.moved) >= 1 ? signed(a.moved) : <span className="muted">–</span>}</td>
+                <td className="num muted">{Math.abs(a.fx) >= 1 ? signed(a.fx) : '–'}</td>
+              </tr>))}
+            {Math.abs(rest) >= 1 && <tr><td className="muted">{c.accounts.length - shown.length} more</td><td className="num">{signed(rest)}</td><td /></tr>}
+          </tbody>
+        </table>)}
+      <div className="sub">Balance moved is the change in each balance, in złoty at the month-end rate. Rate is what the
+        exchange rate did to the balance already there. Income less spending leaves out transfers between your accounts.</div>
+    </div>
+  );
+}
+
+interface Insights {
+  month: string;
+  unusual: { category: string; spent: number; usual: number; diff: number }[];
+  biggest: { id: number; date: string; description: string; category: string; amount: number; account: string }[];
+  recurring: { count: number; monthly: number; top: { key: string; monthly: number; frequency: string }[] };
+}
+
+/** What stands out in a month's spending: categories off their usual, the biggest payments, and regular payments. */
+function StoodOut({ month, owner, label }: { month: string; owner: string; label: string }) {
+  const { data: d } = useGet<Insights>(`/insights?month=${month}&owner=${owner}`);
+  if (!d || d.month !== month) return <div className="card"><h2>What stood out in {label}</h2><div className="muted">Loading…</div></div>;
+  return (
+    <div className="card">
+      <h2>What stood out in {label}</h2>
+      {d.unusual.length === 0 ? <div className="sub">Every category was close to its usual month.</div> : (
+        <table className="compact"><tbody>
+          {d.unusual.map((u) => (
+            <tr key={u.category}>
+              <td>{u.category}</td>
+              <td className="num">{fmtMoney(u.spent)}</td>
+              <td className="num"><span className={u.diff > 0 ? 'bad' : 'good'}>{u.diff > 0 ? '▲' : '▼'} {fmtMoney(Math.abs(u.diff))}</span>
+                <div className="sub nowrap">usually {fmtMoney(u.usual)}</div></td>
+            </tr>))}
+        </tbody></table>)}
+      {d.biggest.length > 0 && <>
+        <h3>Biggest payments</h3>
+        <table className="compact"><tbody>
+          {d.biggest.map((b) => (
+            <tr key={b.id}>
+              <td className="nowrap muted">{fmtDate(b.date)}</td>
+              <td className="tx-desc" title={b.description}>{b.description}<div className="sub">{b.category} · {b.account}</div></td>
+              <td className="num">{fmtMoney(b.amount)}</td>
+            </tr>))}
+        </tbody></table>
+      </>}
+      {d.recurring.count > 0 && <div className="sub">
+        Regular payments: <b>{fmtMoney(d.recurring.monthly)}</b> a month across {d.recurring.count}, the largest {d.recurring.top.slice(0, 3).map((r) => r.key).join(', ')}.
+      </div>}
+      <div className="sub">Usual is the median of the six months before. A category stands out when it is 25% and 300 zł off it.</div>
+    </div>
+  );
+}
+
+const median = (xs: number[]) => { const v = [...xs].sort((a, b) => a - b); const m = v.length >> 1; return v.length ? (v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2) : 0; };
+
+/** Investments grown year by year at the assumed return, with a monthly amount added, against the FI number. */
+function FirePathCard({ fire, invested, savedMonths }: { fire: Fire; invested: number; savedMonths: number[] }) {
+  const usual = Math.max(0, Math.round(median(savedMonths) / 100) * 100);
+  const [typed, setTyped] = useState(() => localStorage.getItem('fireMonthly') ?? '');
+  const monthly = typed.trim() === '' ? usual : Math.max(0, Number(typed.replace(/\s/g, '').replace(',', '.')) || 0);
+  const pick = (v: string) => { setTyped(v); localStorage.setItem('fireMonthly', v); };
+
+  // long enough to show reaching FI, or 30 years when it isn't reached
+  const reach = projectFire(invested, monthly, fire.returnRate, fire.fiNumber, 40).fiMonths;
+  const years = Math.min(40, Math.max(15, fire.retirementAge - fire.currentAge + 5, reach === null ? 30 : Math.ceil(reach / 12) + 5));
+  const path = projectFire(invested, monthly, fire.returnRate, fire.fiNumber, years);
+  const ages = path.values.map((_, i) => fire.currentAge + i);
+  const series: LineSeries[] = [
+    { key: 'invested', label: 'Investments', color: 'var(--series-1)', values: path.values },
+    { key: 'fi', label: 'FI number', color: 'var(--text-2)', values: path.values.map(() => fire.fiNumber), dashed: true },
+  ];
+  const fiAge = reach === null ? null : fire.currentAge + reach / 12;
+  const atRetirement = path.values[fire.retirementAge - fire.currentAge];
+  return (
+    <div className="card">
+      <div className="card-head">
+        <div>
+          <h2>Path to financial independence</h2>
+          <div className="sub">{fiAge === null
+            ? <>Not reached within {years} years at this rate.</>
+            : reach === 0 ? <>Your investments already cover the FI number.</>
+            : <>FI at about <b>age {Math.floor(fiAge)}</b>, in {Math.floor(reach! / 12)} years {reach! % 12} months
+              {fiAge > fire.retirementAge ? <>, <span className="bad">{(fiAge - fire.retirementAge).toFixed(1)} years after</span> your target of {fire.retirementAge}</> : <>, by your target of {fire.retirementAge}</>}.</>}</div>
+        </div>
+        <div className="filters">
+          <Legend items={series.map((x) => ({ label: x.label, color: x.color, dashed: x.dashed }))} />
+          <label className="field inline">Invest a month
+            <input value={typed} placeholder={String(usual)} onChange={(e) => pick(e.target.value)} style={{ width: 90 }} aria-label="Invested each month, złoty" /></label>
+        </div>
+      </div>
+      <LineChart months={ages.map(String)} series={series} format={fmtMoney} height={240} xLabel={(i, full) => (full ? `Age ${ages[i]}` : String(ages[i]))}
+        tooltipExtra={(i) => i > 0 ? <div className="tt-row"><span /><span>Added by then</span><b>{fmtMoney(monthly * 12 * i)}</b></div> : null} />
+      <div className="sub">
+        {atRetirement !== undefined && <>At {fire.retirementAge}: {fmtMoney(atRetirement)}. </>}
+        Starts from {fmtMoney(invested)} invested, adds {fmtMoney(monthly)} a month{typed.trim() === '' ? ' (your median saved over the last 12 months)' : ''} and
+        grows at {fmtPct(fire.returnRate)} a year. The FI number is held at today's spending, so read it in today's money only if the return is after inflation.
+      </div>
     </div>
   );
 }

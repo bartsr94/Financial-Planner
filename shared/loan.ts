@@ -77,3 +77,21 @@ function parsePekaoLoan(rows: string[][]): LoanEvent[] {
   }
   return out;
 }
+
+/**
+ * Paying off what is owed now: `lumpSum` off the balance today, then `payment` plus `extra` each month, interest at
+ * `apr` / 12 on the balance. Returns the payments left and the interest still to pay. Stops at 100 years when the
+ * payment doesn't cover the interest.
+ */
+export function payoff(balance: number, apr: number, payment: number, extra = 0, lumpSum = 0): { payments: number; interest: number } {
+  const r = apr / 12;
+  let bal = Math.max(0, balance - lumpSum);
+  let payments = 0, interest = 0;
+  while (bal > 0.005 && payments < 1200) {
+    const owed = bal * r;
+    interest += owed;
+    bal = Math.max(0, bal + owed - payment - extra);
+    payments++;
+  }
+  return { payments, interest };
+}
