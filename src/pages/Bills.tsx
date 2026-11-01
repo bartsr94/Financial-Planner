@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, fmtDate, fmtMoneyExact, type Bill } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { SkeletonPage } from '../Skeleton.tsx';
 
 interface Meta { categories: string[]; today: string }
 interface CalItem { billId: number; name: string; amount: number; date: string }
@@ -60,7 +61,7 @@ export function Bills() {
   }
 
   if (error) return <p className="error">{error}</p>;
-  if (!bills || !meta) return <p className="muted">Loading…</p>;
+  if (!bills || !meta) return <SkeletonPage cards={2} />;
 
   return (
     <>

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { SkeletonPage } from '../Skeleton.tsx';
 
 const FIELDS: { key: string; label: string; hint: string; percent?: boolean }[] = [
   { key: 'withdrawalRate', label: 'Safe withdrawal rate (%)', hint: 'The 4% rule is the default', percent: true },
@@ -16,7 +17,7 @@ export function SettingsPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [saved, setSaved] = useState(false);
   if (error) return <p className="error">{error}</p>;
-  if (!s) return <p className="muted">Loading…</p>;
+  if (!s) return <SkeletonPage cards={2} />;
 
   const shown = (f: (typeof FIELDS)[number]) => edits[f.key] ?? (f.percent ? String(+(Number(s[f.key]) * 100).toFixed(2)) : s[f.key]);
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
   dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
-  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine, findRecurring, type RecurringLine, forecastCash, explainChange, unusualCategories, businessMonths, type BusinessRow,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine, findRecurring, type RecurringLine, forecastCash, explainChange, unusualCategories, businessMonths, type BusinessRow, backupsToDelete,
 } from './logic.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
 import { projectFire } from '../shared/fire.ts';
@@ -309,4 +309,10 @@ test('business months: revenue less costs, taxes and what was paid out', () => {
     { month: '2026-09', revenue: 30000, costs: 1000, taxes: 6000, paidOut: 10000, kept: 13000 },
     { month: '2026-10', revenue: 0, costs: 0, taxes: 0, paidOut: 0, kept: 0 },
   ]);
+});
+
+test('backupsToDelete keeps the newest automatic backups and ignores manual ones', () => {
+  const names = ['auto-2026-10-30.db', 'planner-before-merge.db', 'auto-2026-11-01.db', 'auto-2026-10-31.db', 'auto-notes.txt'];
+  assert.deepEqual(backupsToDelete(names, 2), ['auto-2026-10-30.db']);
+  assert.deepEqual(backupsToDelete(names, 14), []);
 });

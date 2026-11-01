@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, fmtDate, fmtMoney } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { SkeletonPage } from '../Skeleton.tsx';
 
 interface Group { key: string; count: number; spent: number; received: number; accounts: string[]; first: string; last: string; example: string }
 
@@ -23,7 +24,7 @@ export function Review() {
   }
 
   if (error) return <p className="error">{error}</p>;
-  if (!data) return <div className="muted">Loading…</div>;
+  if (!data) return <SkeletonPage cards={2} />;
   const groupSpent = data.groups.reduce((s, g) => s + g.spent, 0);
 
   return (

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, fmtDate, fmtMoney, fmtMoneyIn } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { SkeletonPage } from '../Skeleton.tsx';
 import { Legend, LineChart, type LineSeries } from '../charts.tsx';
 import { BalanceHistory } from '../BalanceHistory.tsx';
 import { Mortgage } from './Mortgage.tsx';
@@ -32,7 +33,7 @@ export function Loans() {
   }
 
   if (error) return <p className="error">{error}</p>;
-  if (!loans) return <p className="muted">Loading…</p>;
+  if (!loans) return <SkeletonPage cards={2} />;
 
   // one line per loan over the months any of them has a balance for, in PLN so loans in other currencies add up
   const months = [...new Set(loans.flatMap((l) => l.history.map((h) => h.month)))].sort();

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { fmtMoney, fmtPct } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { SkeletonPage } from '../Skeleton.tsx';
 import { BarChart, Legend, monthLabel, type Series } from '../charts.tsx';
 
 interface BusinessMonth { month: string; revenue: number; costs: number; taxes: number; paidOut: number; kept: number; cash: number }
@@ -20,7 +21,7 @@ export function Business() {
   const pick = (r: string) => { setRange(r); localStorage.setItem('businessRange', r); };
 
   if (error) return <p className="error">{error}</p>;
-  if (!b) return <div className="muted">Loading…</div>;
+  if (!b) return <SkeletonPage kpis={4} cards={2} />;
   const total = (k: keyof Omit<BusinessMonth, 'month' | 'cash'>) => b.months.reduce((t, m) => t + m[k], 0);
   const revenue = total('revenue');
   const series: Series[] = PARTS.map(([key, label, color]) => ({ key, label, color, values: b.months.map((m) => m[key]) }));

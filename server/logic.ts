@@ -470,3 +470,8 @@ export function businessMonths(rows: BusinessRow[], months: string[]): BusinessM
     return { month, revenue, costs, taxes, paidOut, kept: revenue - costs - taxes - paidOut };
   });
 }
+
+/** The automatic backups to remove so that only the newest `keep` remain. Other files in the folder are never touched. */
+export function backupsToDelete(names: string[], keep = 14): string[] {
+  return names.filter((n) => /^auto-\d{4}-\d{2}-\d{2}\.db$/.test(n)).sort().reverse().slice(keep);
+}

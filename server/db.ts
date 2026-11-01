@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-const DB_PATH = resolve(process.env.FP_DB ?? 'data/planner.db');
+export const DB_PATH = resolve(process.env.FP_DB ?? 'data/planner.db');
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);

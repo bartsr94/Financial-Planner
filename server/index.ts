@@ -12,6 +12,7 @@ import { merchantKey } from '../shared/merchant.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
 import { ensureRates, missingRates, rateSql } from './fx.ts';
 import { CURRENCIES } from '../shared/parse.ts';
+import { startBackups } from './backup.ts';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -104,11 +105,14 @@ app.delete('/api/accounts/:id', (req, res) => {
 });
 
 // ------------------------------------------------------------------ transactions
-app.get('/api/transactions', (req, res) => {
+app.get('/api/transactions', async (req, res) => {
+  await ensureRates();
   const where: string[] = ['a.archived = 0'];
   const p: (string | number)[] = [];
   const q = req.query;
-  if (typeof q.account === 'string' && q.account) { where.push('t.account_id = ?'); p.push(Number(q.account)); }
+  // an account id, or "personal" / "business" for all of one owner's accounts
+  if (q.account === 'personal' || q.account === 'business') { where.push('a.owner = ?'); p.push(q.account); }
+  else if (typeof q.account === 'string' && q.account) { where.push('t.account_id = ?'); p.push(Number(q.account)); }
   if (typeof q.owner === 'string' && q.owner) { where.push('a.owner = ?'); p.push(q.owner); }
   if (typeof q.from === 'string' && q.from) { where.push('t.date >= ?'); p.push(q.from); }
   if (typeof q.to === 'string' && q.to) { where.push('t.date <= ?'); p.push(q.to); }
@@ -116,7 +120,8 @@ app.get('/api/transactions', (req, res) => {
     if (q.category === '__none') where.push('t.category IS NULL'); else { where.push('t.category = ?'); p.push(q.category); }
   }
   const rows = all(
-    `SELECT t.id, t.account_id, a.name AS account, a.owner, a.currency, t.date, t.amount, t.description, t.category
+    `SELECT t.id, t.account_id, a.name AS account, a.owner, a.currency, t.date, t.amount, t.description, t.category,
+            ${plnSql('t.amount', 't.date')} AS amount_pln
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.id DESC`,
     ...p,
@@ -127,7 +132,20 @@ app.get('/api/transactions', (req, res) => {
   // one page at a time: rendering every row (each with its own category list) is what made the page slow
   const size = Math.min(500, Math.max(1, Math.floor(Number(q.size ?? 100)) || 100));
   const page = Math.max(1, Math.floor(Number(q.page ?? 1)) || 1);
-  res.json({ rows: found.slice((page - 1) * size, page * size), total: found.length, page, size });
+  // totals of everything the filters match, not just this page, in złoty at each day's rate
+  let moneyIn = 0, moneyOut = 0;
+  for (const r of found) { const v = Number(r.amount_pln ?? 0); if (v > 0) moneyIn += v; else moneyOut -= v; }
+  res.json({ rows: found.slice((page - 1) * size, page * size), total: found.length, page, size, moneyIn, moneyOut });
+});
+
+// Several lines filed under one category at once. An empty category clears them.
+app.post('/api/transactions/categorise', (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).filter((x): x is number => Number.isInteger(x)) : [];
+  if (!ids.length) return bad(res, 'ids required');
+  const category = str(req.body?.category);
+  if (category && !(CATEGORIES as readonly string[]).includes(category)) return bad(res, 'unknown category');
+  const r = run(`UPDATE transactions SET category = ? WHERE id IN (${ids.map(() => '?').join(',')})`, category || null, ...ids);
+  res.json({ updated: Number(r.changes) });
 });
 
 app.patch('/api/transactions/:id', (req, res) => {
@@ -723,6 +741,15 @@ app.get('/api/networth-history', async (_req, res) => {
   res.json(out);
 });
 
+// Each open account's month-end balance over the last months, in its own currency, for the sparklines.
+app.get('/api/account-history', async (req, res) => {
+  await ensureRates();
+  const thisMonth = todayISO().slice(0, 7);
+  const back = Math.min(120, Math.max(2, Math.floor(Number(req.query.months ?? 12)) || 12));
+  const months = monthsBetween(addMonths(`${thisMonth}-01`, -(back - 1)).slice(0, 7), thisMonth);
+  res.json(accountHistories(months).map((a) => ({ id: a.id, balances: a.balances })));
+});
+
 // Why net worth moved in a month: each account's change, split into what moved in the account and what the
 // exchange rate did to the balance it already had, plus that month's income and spending.
 app.get('/api/networth-change', async (req, res) => {
@@ -756,3 +783,4 @@ if (existsSync(dist)) {
 
 const PORT = Number(process.env.PORT ?? 3001);
 app.listen(PORT, '127.0.0.1', () => console.log(`Finance Planner API on http://127.0.0.1:${PORT}`));
+if (!process.env.FP_DB) startBackups();

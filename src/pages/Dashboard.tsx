@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useState } from 'react';
 import { fmtDate, fmtMoney, fmtPct } from '../api.ts';
 import { useGet } from '../hooks.ts';
 import { projectFire } from '../../shared/fire.ts';
 import { BarChart, Legend, LineChart, Sparkline, monthLabel, type LineSeries, type Series } from '../charts.tsx';
+import { Empty, MonthHeader, THIS_MONTH as thisMonth, soFar, useMonthView } from '../monthView.tsx';
+import { SkeletonPage, SkeletonRows } from '../Skeleton.tsx';
 
 interface Summary {
   netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number; missingRates: string[];
@@ -14,74 +16,31 @@ interface Fire {
   fiNumber: number; leanFi: number; fatFi: number; coastFi: number; percentToFi: number; investedCoversYearly: number;
   coastReached: boolean; returnRate: number; currentAge: number; retirementAge: number;
 }
-interface MonthTrend { month: string; income: number; expenses: number; net: number; savingsRate: number | null; byCategory: Record<string, number> }
-interface Trends {
-  months: MonthTrend[]; categories: string[]; latestWithData: string | null; owner: string;
-  rows: { month: string; category: string; income: number; expenses: number }[];
-}
-
-// Categorical slots in fixed order (see styles.css); "Other" is always the neutral.
-const colorFor = (categories: string[], c: string) => {
-  if (c === 'Uncategorised') return 'var(--series-uncat)';
-  const named = categories.filter((x) => x !== 'Uncategorised' && x !== 'Other');
-  return named.includes(c) ? `var(--series-${named.indexOf(c) + 1})` : 'var(--series-other)';
-};
 interface Forecast {
   owner: string; today: string; cash: number; basis: string[]; income: number; spending: number;
   months: { month: string; income: number; spending: number; balance: number; bills: number; billCount: number }[];
 }
 interface NetWorthMonth { month: string; cash: number; investments: number; assets: number; debt: number; netWorth: number }
 
-const RANGES = [['6', '6M'], ['12', '12M'], ['24', '2Y'], ['0', 'All']] as const;
 const NW_VIEWS = [['net', 'Net worth'], ['parts', 'Owned and owed']] as const;
-const OWNERS = [['personal', 'Personal'], ['business', 'Business'], ['all', 'Both']] as const;
 
+/** The overview: what you're worth, how it moved, cash flow and the way to financial independence. */
 export function Dashboard() {
+  const view = useMonthView();
+  const { t, range, owner, sel, cur, prev, months, selectMonth } = view;
   const { data: s, error } = useGet<Summary>('/summary');
-  const [range, setRange] = useState(() => localStorage.getItem('range') ?? '12');
-  const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'all');
-  const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
   const { data: nw } = useGet<NetWorthMonth[]>('/networth-history');
   const { data: fc } = useGet<Forecast>(`/forecast?months=6&owner=${owner}`);
-  const [selected, setSelected] = useState<string | null>(null);
   const [nwView, setNwView] = useState(() => localStorage.getItem('nwView') ?? 'net');
 
-  // default to the last complete month: the current one is only partly in, and reads as a sudden drop
-  const today = new Date();
-  const thisMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
-  useEffect(() => {
-    if (!t || (selected && t.months.some((m) => m.month === selected))) return;
-    const complete = t.months.filter((m) => m.month < thisMonth && (!t.latestWithData || m.month <= t.latestWithData)).at(-1)?.month;
-    setSelected(complete ?? t.latestWithData ?? t.months.at(-1)?.month ?? null);
-  }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
-  const soFar = (month: string) => (month === thisMonth ? ' so far' : '');
+  if (error || view.error) return <p className="error">{error || view.error}</p>;
+  if (!s || !t) return <><MonthHeader title="Overview" view={view} /><SkeletonPage kpis={4} cards={2} /></>;
 
-  const sel = t?.months.findIndex((m) => m.month === selected) ?? -1;
-  const cur = t && sel >= 0 ? t.months[sel] : undefined;
-  const prev = t && sel > 0 ? t.months[sel - 1] : undefined;
-
-  // full category breakdown for the selected month, compared with the month before
-  const breakdown = useMemo(() => {
-    if (!t || !cur) return [];
-    const spentIn = (m?: string) => new Map(t.rows.filter((r) => r.month === m && r.expenses > 0).map((r) => [r.category, r.expenses]));
-    const now = spentIn(cur.month), before = spentIn(prev?.month);
-    return [...now.entries()].sort((a, b) => b[1] - a[1]).map(([category, spent]) => ({ category, spent, before: before.get(category) ?? 0 }));
-  }, [t, cur, prev]);
-
-  if (error) return <p className="error">{error}</p>;
-  if (!s || !t) return <p className="muted">Loading…</p>;
-
-  const months = t.months.map((m) => m.month);
   const hasFlows = t.months.some((m) => m.income || m.expenses);
   const flowSeries: Series[] = [
     { key: 'income', label: 'Income', color: 'var(--income)', values: t.months.map((m) => m.income) },
     { key: 'expenses', label: 'Spending', color: 'var(--spending)', values: t.months.map((m) => m.expenses) },
   ];
-  const catSeries: Series[] = t.categories.map((c) => ({ key: c, label: c, color: colorFor(t.categories, c), values: t.months.map((m) => m.byCategory[c] ?? 0) }));
-  const maxCat = Math.max(1, ...breakdown.map((b) => b.spent));
-  const selectMonth = (i: number) => setSelected(months[i]);
-  const pickRange = (r: string) => { setRange(r); localStorage.setItem('range', r); };
-  const pickOwner = (o: string) => { setOwner(o); localStorage.setItem('owner', o); };
   const noData = s.netWorth === 0 && !hasFlows;
   // net worth is everything you own, so it ignores the personal/business filter but follows the range
   const nwShown = nw && (range === '0' ? nw : nw.slice(-Number(range)));
@@ -109,21 +68,7 @@ export function Dashboard() {
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1>Overview</h1>
-          <div className="sub">{cur ? <>Showing <b>{monthLabel(cur.month, true)}{soFar(cur.month)}</b>. Click a month in a chart to change it.</> : 'Your money at a glance.'}
-            {t.owner !== 'all' && <> Charts show {t.owner} accounts only.</>}</div>
-        </div>
-        <div className="filters">
-          <div className="segmented" role="group" aria-label="Whose money">
-            {OWNERS.map(([v, label]) => <button key={v} className={t.owner === v ? 'on' : ''} onClick={() => pickOwner(v)}>{label}</button>)}
-          </div>
-          <div className="segmented" role="group" aria-label="Range">
-            {RANGES.map(([v, label]) => <button key={v} className={range === v ? 'on' : ''} onClick={() => pickRange(v)}>{label}</button>)}
-          </div>
-        </div>
-      </div>
+      <MonthHeader title="Overview" view={view} />
 
       {noData && (
         <div className="card callout">
@@ -180,12 +125,24 @@ export function Dashboard() {
         </div>
       )}
 
-      {cur && (
-        <div className="cols-2">
-          <WhatChanged month={cur.month} label={monthLabel(cur.month, true) + soFar(cur.month)} />
-          <StoodOut month={cur.month} owner={owner} label={monthLabel(cur.month, true) + soFar(cur.month)} />
+      <div className="cols-2">
+        {cur ? <WhatChanged month={cur.month} label={monthLabel(cur.month, true) + soFar(cur.month)} /> : <div />}
+        <div className="card">
+          <div className="card-head"><h2>Upcoming bills</h2><span className="muted small">{fmtMoney(s.bills.dueNext30Days)} in 30 days</span></div>
+          {s.bills.overdueCount > 0 && <div className="callout bad-callout">⚠ {s.bills.overdueCount} overdue, {fmtMoney(s.bills.overdueTotal)}</div>}
+          {s.bills.next.length === 0 ? <div className="muted">No bills set up.</div> : (
+            <ul className="bill-list">
+              {s.bills.next.map((b, i) => (
+                <li key={`${b.id}-${i}`}>
+                  <div className="date-chip"><b>{Number(b.date.slice(8, 10))}</b><span>{monthLabel(b.date.slice(0, 7))}</span></div>
+                  <div className="bill-name">{b.name}{b.status !== 'upcoming' && <span className={`pill ${b.status}`}>{b.status === 'overdue' ? 'overdue' : 'soon'}</span>}
+                    <div className="sub">{fmtDate(b.date)}</div></div>
+                  <div className="num">{fmtMoney(b.amount)}</div>
+                </li>))}
+            </ul>)}
         </div>
-      )}
+
+      </div>
 
       {fc && (
         <div className="cols-2">
@@ -252,53 +209,6 @@ export function Dashboard() {
             : <Empty />}
         </div>
         <div className="card">
-          <div className="card-head"><h2>Where the money went</h2></div>
-          {catSeries.length
-            ? <>
-                <BarChart months={months} series={catSeries} stacked format={fmtMoney} selected={sel} onSelect={selectMonth} height={200} />
-                <Legend items={catSeries.map((x) => ({ label: x.label, color: x.color }))} />
-              </>
-            : <Empty />}
-        </div>
-      </div>
-
-      <div className="cols-3">
-        <div className="card">
-          <h2>Spending in {cur ? monthLabel(cur.month, true) + soFar(cur.month) : '…'}</h2>
-          {breakdown.length === 0 ? <div className="muted">No spending recorded in this month.</div> : (
-            <table className="cat-table"><tbody>
-              {breakdown.slice(0, 10).map((b) => {
-                const delta = b.spent - b.before;
-                return (
-                  <tr key={b.category}>
-                    <td className="cat-name"><span className="swatch" style={{ background: colorFor(t.categories, b.category) }} />{b.category}</td>
-                    <td className="cat-bar"><div className="bar"><div style={{ width: `${(b.spent / maxCat) * 100}%` }} /></div></td>
-                    <td className="num">{fmtMoney(b.spent)}</td>
-                    <td className="num delta">{prev && Math.abs(delta) >= 1
-                      ? <span className={delta > 0 ? 'bad' : 'good'} title={`${fmtMoney(b.before)} in ${monthLabel(prev.month)}`}>{delta > 0 ? '▲' : '▼'} {fmtMoney(Math.abs(delta))}</span>
-                      : <span className="muted">–</span>}</td>
-                  </tr>);
-              })}
-            </tbody></table>)}
-          {prev && breakdown.length > 0 && <div className="sub">Arrows compare with {monthLabel(prev.month, true)}.</div>}
-        </div>
-
-        <div className="card">
-          <div className="card-head"><h2>Upcoming bills</h2><span className="muted small">{fmtMoney(s.bills.dueNext30Days)} in 30 days</span></div>
-          {s.bills.overdueCount > 0 && <div className="callout bad-callout">⚠ {s.bills.overdueCount} overdue, {fmtMoney(s.bills.overdueTotal)}</div>}
-          {s.bills.next.length === 0 ? <div className="muted">No bills set up.</div> : (
-            <ul className="bill-list">
-              {s.bills.next.map((b, i) => (
-                <li key={`${b.id}-${i}`}>
-                  <div className="date-chip"><b>{Number(b.date.slice(8, 10))}</b><span>{monthLabel(b.date.slice(0, 7))}</span></div>
-                  <div className="bill-name">{b.name}{b.status !== 'upcoming' && <span className={`pill ${b.status}`}>{b.status === 'overdue' ? 'overdue' : 'soon'}</span>}
-                    <div className="sub">{fmtDate(b.date)}</div></div>
-                  <div className="num">{fmtMoney(b.amount)}</div>
-                </li>))}
-            </ul>)}
-        </div>
-
-        <div className="card">
           <h2>Financial independence</h2>
           <div className="big">{fmtPct(s.fire.percentToFi)}</div>
           <div className="progress"><div style={{ width: `${Math.min(100, s.fire.percentToFi * 100)}%` }} /></div>
@@ -342,7 +252,7 @@ const signed = (v: number) => `${v >= 0 ? '+' : '−'}${fmtMoney(Math.abs(v))}`;
 /** A month's net worth change, account by account, with exchange-rate moves apart from money moved. */
 function WhatChanged({ month, label }: { month: string; label: string }) {
   const { data: c } = useGet<Change>(`/networth-change?month=${month}`);
-  if (!c || c.month !== month) return <div className="card"><h2>What changed in {label}</h2><div className="muted">Loading…</div></div>;
+  if (!c || c.month !== month) return <div className="card"><h2>What changed in {label}</h2><SkeletonRows rows={8} /></div>;
   const fx = c.accounts.reduce((t, a) => t + a.fx, 0);
   const saved = c.income - c.expenses;
   const shown = c.accounts.slice(0, 8);
@@ -374,49 +284,6 @@ function WhatChanged({ month, label }: { month: string; label: string }) {
         </table>)}
       <div className="sub">Balance moved is the change in each balance, in złoty at the month-end rate. Rate is what the
         exchange rate did to the balance already there. Income less spending leaves out transfers between your accounts.</div>
-    </div>
-  );
-}
-
-interface Insights {
-  month: string;
-  unusual: { category: string; spent: number; usual: number; diff: number }[];
-  biggest: { id: number; date: string; description: string; category: string; amount: number; account: string }[];
-  recurring: { count: number; monthly: number; top: { key: string; monthly: number; frequency: string }[] };
-}
-
-/** What stands out in a month's spending: categories off their usual, the biggest payments, and regular payments. */
-function StoodOut({ month, owner, label }: { month: string; owner: string; label: string }) {
-  const { data: d } = useGet<Insights>(`/insights?month=${month}&owner=${owner}`);
-  if (!d || d.month !== month) return <div className="card"><h2>What stood out in {label}</h2><div className="muted">Loading…</div></div>;
-  return (
-    <div className="card">
-      <h2>What stood out in {label}</h2>
-      {d.unusual.length === 0 ? <div className="sub">Every category was close to its usual month.</div> : (
-        <table className="compact"><tbody>
-          {d.unusual.map((u) => (
-            <tr key={u.category}>
-              <td>{u.category}</td>
-              <td className="num">{fmtMoney(u.spent)}</td>
-              <td className="num"><span className={u.diff > 0 ? 'bad' : 'good'}>{u.diff > 0 ? '▲' : '▼'} {fmtMoney(Math.abs(u.diff))}</span>
-                <div className="sub nowrap">usually {fmtMoney(u.usual)}</div></td>
-            </tr>))}
-        </tbody></table>)}
-      {d.biggest.length > 0 && <>
-        <h3>Biggest payments</h3>
-        <table className="compact"><tbody>
-          {d.biggest.map((b) => (
-            <tr key={b.id}>
-              <td className="nowrap muted">{fmtDate(b.date)}</td>
-              <td className="tx-desc" title={b.description}>{b.description}<div className="sub">{b.category} · {b.account}</div></td>
-              <td className="num">{fmtMoney(b.amount)}</td>
-            </tr>))}
-        </tbody></table>
-      </>}
-      {d.recurring.count > 0 && <div className="sub">
-        Regular payments: <b>{fmtMoney(d.recurring.monthly)}</b> a month across {d.recurring.count}, the largest {d.recurring.top.slice(0, 3).map((r) => r.key).join(', ')}.
-      </div>}
-      <div className="sub">Usual is the median of the six months before. A category stands out when it is 25% and 300 zł off it.</div>
     </div>
   );
 }
@@ -469,4 +336,3 @@ function FirePathCard({ fire, invested, savedMonths }: { fire: Fire; invested: n
   );
 }
 
-const Empty = () => <div className="empty">Import a bank statement to see this.</div>;
