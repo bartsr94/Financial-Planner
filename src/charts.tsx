@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 
 /** One bar series: a label for the legend and tooltip, a CSS colour, and one value per month. */
 export interface Series { key: string; label: string; color: string; values: number[] }
@@ -167,5 +167,77 @@ export function Sparkline({ values, color = 'var(--series-1)' }: { values: numbe
       <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
       <circle cx={pts.at(-1)!.split(',')[0]} cy={pts.at(-1)!.split(',')[1]} r={3} fill={color} />
     </svg>
+  );
+}
+
+/** One line: values per month, null where nothing is known yet (the line starts at its first value). */
+export interface LineSeries { key: string; label: string; color: string; values: (number | null)[] }
+
+/** Monthly lines on one axis, with a crosshair and a tooltip listing every series at the hovered month. */
+export function LineChart({ months, series, height = 260, format }: { months: string[]; series: LineSeries[]; height?: number; format: (n: number) => string }) {
+  const [wrapRef, width] = useWidth<HTMLDivElement>();
+  const [hover, setHover] = useState<number | null>(null);
+
+  const n = months.length;
+  const values = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
+  const max = Math.max(0, ...values), min = Math.min(0, ...values);
+  const step = niceStep(max - min, 4);
+  const top = Math.ceil(max / step) * step || step;
+  const bottom = Math.floor(min / step) * step;
+
+  const pad = { l: 44, r: 12, t: 10, b: 26 };
+  const plotW = Math.max(0, width - pad.l - pad.r);
+  const plotH = height - pad.t - pad.b;
+  const x = (i: number) => pad.l + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
+  const y = (v: number) => pad.t + ((top - v) / (top - bottom)) * plotH;
+  const ticks: number[] = [];
+  for (let v = bottom; v <= top + step / 2; v += step) ticks.push(v);
+  const labelEvery = Math.ceil(n / Math.max(1, Math.floor(plotW / 44)));
+
+  function onMove(e: ReactMouseEvent<SVGRectElement>) {
+    const box = e.currentTarget.getBoundingClientRect();
+    const i = n > 1 ? Math.round(((e.clientX - box.left) / box.width) * (n - 1)) : 0;
+    setHover(Math.max(0, Math.min(n - 1, i)));
+  }
+
+  const tipLeft = hover === null ? 0 : x(hover);
+  return (
+    <div className="chart" ref={wrapRef} style={{ height }} onMouseLeave={() => setHover(null)}>
+      {width > 0 && n > 0 && (
+        <svg width={width} height={height} role="img" aria-label={series.map((s) => s.label).join(', ') + ' by month'}>
+          {ticks.map((t) => (
+            <g key={t}>
+              <line x1={pad.l} x2={width - pad.r} y1={y(t)} y2={y(t)} className={t === 0 ? 'axis' : 'gridline'} />
+              <text x={pad.l - 8} y={y(t)} dy="0.32em" textAnchor="end" className="tick">{compact.format(t)}</text>
+            </g>
+          ))}
+          {months.map((m, i) => (i % labelEvery === 0 || i === n - 1) && (
+            <text key={m} x={x(i)} y={height - 8} textAnchor="middle" className={hover === i ? 'tick strong' : 'tick'}>
+              {monthLabel(m)}{(i === 0 || m.endsWith('-01')) && n > 1 ? ` ’${m.slice(2, 4)}` : ''}
+            </text>
+          ))}
+          {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + plotH} className="crosshair" />}
+          {series.map((s) => {
+            const pts = s.values.map((v, i) => (v === null ? null : `${x(i)},${y(v)}`)).filter(Boolean);
+            return <polyline key={s.key} points={pts.join(' ')} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />;
+          })}
+          {hover !== null && series.map((s) => s.values[hover] !== null && (
+            <circle key={s.key} cx={x(hover)} cy={y(s.values[hover]!)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+          ))}
+          <rect x={pad.l} y={0} width={plotW} height={height} fill="transparent" onMouseMove={onMove} />
+        </svg>
+      )}
+      {hover !== null && (
+        <div className="tooltip" style={{ left: tipLeft, transform: tipLeft > width * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)' }}>
+          <div className="tt-title">{monthLabel(months[hover], true)}</div>
+          {series.map((s) => (
+            <div className="tt-row" key={s.key}>
+              <span className="swatch" style={{ background: s.color }} />
+              <span>{s.label}</span><b>{s.values[hover] === null ? '–' : format(s.values[hover]!)}</b>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

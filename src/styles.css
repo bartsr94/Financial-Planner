@@ -86,6 +86,7 @@ b { font-weight: 600; }
 .chart .axis { stroke: var(--line); stroke-width: 1; }
 .chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .tick.strong { fill: var(--text); font-weight: 600; }
+.chart .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart .band { fill: var(--sunk); opacity: .7; }
 .chart .band.selected { fill: var(--accent-soft); opacity: 1; }
 .tooltip { position: absolute; top: 8px; pointer-events: none; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, .14); font-size: 12px; min-width: 170px; z-index: 3; }
@@ -149,3 +150,5 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .tx-account { white-space: nowrap; color: var(--text-2); font-size: 13px; }
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; font-size: 13px; }
 .pager .muted { margin-right: auto; }
+.history { padding: 8px 0; }
+table.compact td { padding: 4px 8px; }

@@ -4,7 +4,7 @@ import { Bills } from './pages/Bills.tsx';
 import { Transactions } from './pages/Transactions.tsx';
 import { Accounts } from './pages/Accounts.tsx';
 import { ImportPage } from './pages/ImportPage.tsx';
-import { Mortgage } from './pages/Mortgage.tsx';
+import { Loans } from './pages/Loans.tsx';
 import { SettingsPage } from './pages/SettingsPage.tsx';
 
 // 24px line icons, drawn with the current text colour
@@ -15,7 +15,7 @@ const TABS = {
   Transactions: { page: Transactions, icon: icon(<path d="M4 7h13l-3-3M20 17H7l3 3" />) },
   Accounts: { page: Accounts, icon: icon(<><path d="M3 10l9-6 9 6" /><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 21h18" /></>) },
   Import: { page: ImportPage, icon: icon(<><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>) },
-  Mortgage: { page: Mortgage, icon: icon(<><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M10 20v-6h4v6" /></>) },
+  Loans: { page: Loans, icon: icon(<><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M10 20v-6h4v6" /></>) },
   Settings: { page: SettingsPage, icon: icon(<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" /></>) },
 } as const;
 type Tab = keyof typeof TABS;

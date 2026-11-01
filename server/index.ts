@@ -5,7 +5,9 @@ import { db, getSettings, CATEGORIES } from './db.ts';
 import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
   todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine,
 } from './logic.ts';
+import { parseLoanHistory } from '../shared/loan.ts';
 import { ensureRates, missingRates, rateSql } from './fx.ts';
 import { CURRENCIES } from '../shared/parse.ts';
 
@@ -64,6 +66,33 @@ app.put('/api/accounts/:id', (req, res) => {
     str(b.owner, String(cur.owner)), currencyOf(b.currency, String(cur.currency)), balance, id,
   );
   saveSnapshot(id, balance);
+  res.json({ ok: true });
+});
+
+// Balances recorded for past months: the history of accounts without transactions (property, loans, investments).
+app.get('/api/accounts/:id/snapshots', (req, res) => {
+  res.json(all('SELECT month, balance FROM balance_snapshots WHERE account_id = ? ORDER BY month', Number(req.params.id)));
+});
+
+app.put('/api/accounts/:id/snapshots', (req, res) => {
+  const id = Number(req.params.id);
+  if (!one('SELECT 1 FROM accounts WHERE id = ?', id)) return res.status(404).json({ error: 'not found' });
+  const rows = (Array.isArray(req.body?.snapshots) ? req.body.snapshots : []) as { month?: unknown; balance?: unknown }[];
+  const valid = rows.filter((r) => /^\d{4}-(0[1-9]|1[0-2])$/.test(str(r.month)) && typeof r.balance === 'number' && Number.isFinite(r.balance));
+  if (!valid.length) return bad(res, 'snapshots: [{ month: YYYY-MM, balance }] required');
+  const thisMonth = todayISO().slice(0, 7);
+  for (const r of valid) {
+    run(
+      'INSERT INTO balance_snapshots (account_id, month, balance) VALUES (?, ?, ?) ON CONFLICT(account_id, month) DO UPDATE SET balance = excluded.balance',
+      id, str(r.month), Number(r.balance),
+    );
+    if (r.month === thisMonth) run('UPDATE accounts SET balance = ? WHERE id = ?', Number(r.balance), id);
+  }
+  res.json({ saved: valid.length });
+});
+
+app.delete('/api/accounts/:id/snapshots/:month', (req, res) => {
+  run('DELETE FROM balance_snapshots WHERE account_id = ? AND month = ?', Number(req.params.id), req.params.month);
   res.json({ ok: true });
 });
 
@@ -393,14 +422,112 @@ app.get('/api/trends', async (req, res) => {
   res.json({ ...monthlyTrends(rows, from, to), rows: inRange, latestWithData: rows.at(-1)?.month ?? null, owner });
 });
 
+// ------------------------------------------------------------------ loans
+const loanLines = (accountId: number) => all(
+  'SELECT date, kind, amount, balance_after AS balanceAfter FROM loan_events WHERE account_id = ? ORDER BY date, id', accountId,
+) as unknown as LoanLine[];
+
+/** Record what a loan's statement says was owed at each month end, from its first line to this month. */
+function rebuildLoanSnapshots(accountId: number): number | null {
+  const lines = loanLines(accountId);
+  if (!lines.some((l) => l.balanceAfter !== null)) return null;
+  const months = monthsBetween(lines[0].date.slice(0, 7), todayISO().slice(0, 7));
+  const owed = loanOwed(months, lines);
+  db.exec('BEGIN');
+  try {
+    months.forEach((m, i) => {
+      if (owed[i] === null) return;
+      run(
+        'INSERT INTO balance_snapshots (account_id, month, balance) VALUES (?, ?, ?) ON CONFLICT(account_id, month) DO UPDATE SET balance = excluded.balance',
+        accountId, m, -owed[i]!,
+      );
+    });
+    run('UPDATE accounts SET balance = ? WHERE id = ?', -(owed.at(-1) ?? 0), accountId);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return owed.at(-1) ?? null;
+}
+
+app.post('/api/loans/:id/statement', (req, res) => {
+  const id = Number(req.params.id);
+  if (!one("SELECT 1 FROM accounts WHERE id = ? AND kind = 'debt'", id)) return bad(res, 'not a debt account');
+  const lines = parseLoanHistory(str(req.body?.text));
+  if (!lines.length) return bad(res, 'No loan history found. Expected the bank\'s "Historia kredytu" CSV export.');
+  const seen = new Map<string, number>();
+  let added = 0, duplicates = 0;
+  db.exec('BEGIN');
+  try {
+    for (const l of lines) {
+      const key = `${l.date}|${l.kind}|${l.amount}|${l.description}`;
+      const occurrence = (seen.get(key) ?? 0) + 1;
+      seen.set(key, occurrence);
+      const ins = run(
+        'INSERT OR IGNORE INTO loan_events (account_id, date, kind, amount, balance_after, description, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        id, l.date, l.kind, l.amount, l.balanceAfter, l.description, txHash(l.date, l.amount, `${l.kind}|${l.description}`, occurrence),
+      );
+      if (Number(ins.changes) === 0) duplicates++; else added++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); return res.status(500).json({ error: String(e) }); }
+  res.json({ added, duplicates, owed: rebuildLoanSnapshots(id) });
+});
+
+/** Every debt account: what is owed month by month, and the statement's totals where one was imported. */
+app.get('/api/loans', (_req, res) => {
+  const thisMonth = todayISO().slice(0, 7);
+  const debts = all("SELECT id, name, bank, currency, balance FROM accounts WHERE kind = 'debt' AND archived = 0 ORDER BY name");
+  res.json(debts.map((d) => {
+    const id = Number(d.id);
+    const lines = loanLines(id);
+    const snaps = all('SELECT month, balance FROM balance_snapshots WHERE account_id = ? ORDER BY month', id) as unknown as { month: string; balance: number }[];
+    const months = snaps.length ? monthsBetween(snaps[0].month, thisMonth) : [];
+    const owed = balanceHistory(months, Number(d.balance), [], snaps);
+    return {
+      ...d, owed: -Number(d.balance), fromStatement: lines.length > 0,
+      totals: lines.length ? loanTotals(lines, todayISO()) : null,
+      history: months.map((month, i) => ({ month, owed: owed[i] === null ? null : -owed[i]!, recorded: snaps.some((s) => s.month === month) })),
+    };
+  }));
+});
+
+// ------------------------------------------------------------------ net worth over time
+const rateOn = db.prepare(`SELECT ${rateSql('$cur', '$date')} AS rate`);
+
+/**
+ * Net worth at the end of every month, split by kind of account, in PLN at each month end's NBP rate.
+ * Accounts with transactions are worked back from today's balance; the rest carry their last recorded
+ * monthly balance forward until a newer one.
+ */
 app.get('/api/networth-history', async (_req, res) => {
   await ensureRates();
-  res.json(all(
-    // each month's balances at the rate of that month's last business day
-    `SELECT s.month, SUM(${plnSql('s.balance', "s.month || '-31'")}) AS netWorth FROM balance_snapshots s
-     JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0
-     GROUP BY s.month ORDER BY s.month`,
-  ));
+  const accounts = all('SELECT id, kind, currency, balance FROM accounts WHERE archived = 0');
+  const tx = all('SELECT t.account_id, t.date, t.amount FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE a.archived = 0');
+  const snaps = all('SELECT s.account_id, s.month, s.balance FROM balance_snapshots s JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0');
+  const thisMonth = todayISO().slice(0, 7);
+  const first = [...tx.map((t) => String(t.date).slice(0, 7)), ...snaps.map((s) => String(s.month))].sort()[0] ?? thisMonth;
+  const months = monthsBetween(first, thisMonth);
+
+  const rates = new Map<string, number[]>();
+  const rate = (cur: string, i: number) => {
+    if (!rates.has(cur)) rates.set(cur, months.map((m) => Number((rateOn.get({ cur, date: monthEnd(m) }) as { rate: number | null }).rate ?? 0)));
+    return rates.get(cur)![i];
+  };
+  const KEY: Record<string, 'cash' | 'investments' | 'assets' | 'debt'> = { cash: 'cash', investment: 'investments', asset: 'assets', debt: 'debt' };
+  const out = months.map((month) => ({ month, cash: 0, investments: 0, assets: 0, debt: 0, netWorth: 0 }));
+  for (const a of accounts) {
+    const history = balanceHistory(
+      months, Number(a.balance),
+      tx.filter((t) => t.account_id === a.id).map((t) => ({ date: String(t.date), amount: Number(t.amount) })),
+      snaps.filter((s) => s.account_id === a.id).map((s) => ({ month: String(s.month), balance: Number(s.balance) })),
+    );
+    history.forEach((bal, i) => {
+      if (bal === null) return;
+      const pln = bal * rate(String(a.currency), i);
+      out[i][KEY[String(a.kind)]] += pln;
+      out[i].netWorth += pln;
+    });
+  }
+  res.json(out);
 });
 
 // ------------------------------------------------------------------ static UI (after `npm run build`)

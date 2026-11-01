@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fmtDate, fmtMoney, fmtPct } from '../api.ts';
 import { useGet } from '../hooks.ts';
-import { BarChart, Legend, Sparkline, monthLabel, type Series } from '../charts.tsx';
+import { BarChart, Legend, LineChart, Sparkline, monthLabel, type LineSeries, type Series } from '../charts.tsx';
 
 interface Summary {
   netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number; missingRates: string[];
@@ -21,6 +21,8 @@ const colorFor = (categories: string[], c: string) => {
   const named = categories.filter((x) => x !== 'Uncategorised' && x !== 'Other');
   return named.includes(c) ? `var(--series-${named.indexOf(c) + 1})` : 'var(--series-other)';
 };
+interface NetWorthMonth { month: string; cash: number; investments: number; assets: number; debt: number; netWorth: number }
+
 const RANGES = [['6', '6M'], ['12', '12M'], ['24', '2Y'], ['0', 'All']] as const;
 const OWNERS = [['personal', 'Personal'], ['business', 'Business'], ['all', 'Both']] as const;
 
@@ -29,7 +31,7 @@ export function Dashboard() {
   const [range, setRange] = useState(() => localStorage.getItem('range') ?? '12');
   const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'all');
   const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
-  const { data: nw } = useGet<{ month: string; netWorth: number }[]>('/networth-history');
+  const { data: nw } = useGet<NetWorthMonth[]>('/networth-history');
   const [selected, setSelected] = useState<string | null>(null);
 
   // default to the latest month that has transactions, not a still-empty current month
@@ -64,6 +66,13 @@ export function Dashboard() {
   const pickRange = (r: string) => { setRange(r); localStorage.setItem('range', r); };
   const pickOwner = (o: string) => { setOwner(o); localStorage.setItem('owner', o); };
   const noData = s.netWorth === 0 && !hasFlows;
+  // net worth is everything you own, so it ignores the personal/business filter but follows the range
+  const nwShown = nw && (range === '0' ? nw : nw.slice(-Number(range)));
+  const nwSeries: LineSeries[] | null = nwShown && nwShown.length > 1 ? [
+    { key: 'nw', label: 'Net worth', color: 'var(--series-1)', values: nwShown.map((p) => p.netWorth) },
+    { key: 'owned', label: 'Owned', color: 'var(--series-3)', values: nwShown.map((p) => p.cash + p.investments + p.assets) },
+    { key: 'owed', label: 'Owed', color: 'var(--series-2)', values: nwShown.map((p) => -p.debt) },
+  ] : null;
 
   return (
     <>
@@ -92,8 +101,8 @@ export function Dashboard() {
       <div className="kpis">
         <div className="card kpi">
           <h2>Net worth</h2>
-          <div className="kpi-row"><div className="big">{fmtMoney(s.netWorth)}</div><Sparkline values={(nw ?? []).map((p) => p.netWorth)} /></div>
-          <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}{s.debt ? ` · Debt ${fmtMoney(s.debt)}` : ''}</div>
+          <div className="kpi-row"><div className="big">{fmtMoney(s.netWorth)}</div><Sparkline values={(nw ?? []).slice(-12).map((p) => p.netWorth)} /></div>
+          <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}{s.assets ? ` · Property ${fmtMoney(s.assets)}` : ''}{s.debt ? ` · Debt ${fmtMoney(s.debt)}` : ''}</div>
           {s.businessCash !== 0 && <div className="sub">Includes {fmtMoney(s.businessCash)} in business accounts</div>}
           {s.missingRates.length > 0 && <div className="sub bad">No exchange rate yet for {s.missingRates.join(', ')}, so those accounts count as 0. The app fetches NBP rates when it is online.</div>}
         </div>
@@ -105,6 +114,17 @@ export function Dashboard() {
           <div className="sub">{cur?.savingsRate != null ? <>Savings rate <b>{fmtPct(cur.savingsRate)}</b></> : 'No income this month'}</div>
         </div>
       </div>
+
+      {nwSeries && (
+        <div className="card">
+          <div className="card-head">
+            <h2>Net worth over time</h2>
+            <Legend items={nwSeries.map((x) => ({ label: x.label, color: x.color }))} />
+          </div>
+          <LineChart months={nwShown!.map((p) => p.month)} series={nwSeries} format={fmtMoney} height={260} />
+          <div className="sub">Month-end balances. Accounts with transactions are worked back from today's balance; property, investments and loans use the balance recorded for each month.</div>
+        </div>
+      )}
 
       <div className="card">
         <div className="card-head">

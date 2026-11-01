@@ -37,7 +37,7 @@ export function Mortgage() {
   return (
     <>
       <div className="card" style={{ marginBottom: 12 }}>
-        <h2>Mortgage</h2>
+        <h2>Payoff calculator</h2>
         <div className="row">
           <label className="field">Amount borrowed (PLN)<input value={values.loanPrincipal} onChange={(e) => edit('loanPrincipal', e.target.value)} /></label>
           <label className="field">Interest rate (% a year)<input value={values.loanApr} onChange={(e) => edit('loanApr', e.target.value)} style={{ width: 90 }} /></label>

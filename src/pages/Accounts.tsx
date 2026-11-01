@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { api, fmtMoney, fmtMoneyIn, type Account } from '../api.ts';
 import { CURRENCIES } from '../../shared/parse.ts';
 import { useGet } from '../hooks.ts';
+import { BalanceHistory } from '../BalanceHistory.tsx';
 
 const KINDS: { value: Account['kind']; label: string }[] = [
   { value: 'cash', label: 'Cash / checking / savings' },
@@ -15,6 +16,7 @@ export function Accounts() {
   const { data: accounts, error, reload } = useGet<Account[]>('/accounts');
   const [form, setForm] = useState<(typeof blank & { id?: number }) | null>(null);
   const [msg, setMsg] = useState('');
+  const [history, setHistory] = useState<number | null>(null);
 
   async function save() {
     if (!form) return;
@@ -65,21 +67,25 @@ export function Accounts() {
             <table>
               <thead><tr><th>Account</th><th>Type</th><th className="num">Balance</th><th /></tr></thead>
               <tbody>{list.map((a) => (
-                <tr key={a.id}>
+                <Fragment key={a.id}>
+                <tr>
                   <td>{a.name}<div className="sub">{a.bank}</div></td>
                   <td>{a.kind}</td>
                   <td className={`num ${a.balance < 0 ? 'bad' : ''}`}>{fmtMoneyIn(a.balance, a.currency)}
                     {a.currency !== 'PLN' && <div className="sub">{a.balance_pln === null ? 'no exchange rate yet' : `≈ ${fmtMoney(a.balance_pln)}`}</div>}</td>
                   <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn small" onClick={() => setHistory(history === a.id ? null : a.id)}>History</button>{' '}
                     <button className="btn small" onClick={() => setForm({ ...a, balance: String(a.balance) })}>Edit</button>{' '}
                     <button className="btn small" onClick={() => { if (confirm(`Archive ${a.name}?`)) api(`/accounts/${a.id}`, 'DELETE').then(reload); }}>✕</button>
                   </td>
-                </tr>))}</tbody>
+                </tr>
+                {history === a.id && <tr><td colSpan={4}><BalanceHistory account={a} onChange={reload} /></td></tr>}
+                </Fragment>))}</tbody>
             </table>
           </div>);
       })}
       {accounts.length === 0 && <div className="card muted">No accounts yet. Add your Pekao and mBank accounts, then investments and property.</div>}
-      <div className="sub">Update a balance whenever you like; each update is stored per month so your net-worth history builds up.</div>
+      <div className="sub">Update a balance whenever you like; each update is stored for the current month. <b>History</b> records past months, for property, investments and loans whose history has no transactions behind it.</div>
     </>
   );
 }

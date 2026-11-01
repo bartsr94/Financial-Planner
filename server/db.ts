@@ -77,6 +77,19 @@ CREATE TABLE IF NOT EXISTS fx_rates (
   PRIMARY KEY (currency, date)
 );
 
+-- a loan's history from the bank's statement: drawdowns, principal repaid, interest paid
+CREATE TABLE IF NOT EXISTS loan_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,             -- YYYY-MM-DD
+  kind TEXT NOT NULL CHECK (kind IN ('drawdown','principal','interest')),
+  amount REAL NOT NULL,           -- positive
+  balance_after REAL,             -- still owed after this line (drawdown and principal lines)
+  description TEXT NOT NULL DEFAULT '',
+  hash TEXT NOT NULL,
+  UNIQUE (account_id, hash)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

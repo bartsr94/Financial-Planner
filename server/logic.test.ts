@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
   dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine,
 } from './logic.ts';
+import { parseLoanHistory } from '../shared/loan.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
 
@@ -125,4 +127,47 @@ test('the currency after an amount, and NBP-sized date ranges', () => {
   assert.deepEqual(dateChunks('2026-01-01', '2026-01-05', 2), [['2026-01-01', '2026-01-02'], ['2026-01-03', '2026-01-04'], ['2026-01-05', '2026-01-05']]);
   assert.deepEqual(dateChunks('2025-01-01', '2026-11-01'), [['2025-01-01', '2025-12-26'], ['2025-12-27', '2026-11-01']]);
   assert.deepEqual(dateChunks('2026-11-02', '2026-11-01'), []);
+});
+
+test('balance history works back from today through transactions, else carries snapshots forward', () => {
+  const months = ['2026-01', '2026-02', '2026-03'];
+  const tx = [{ date: '2026-02-10', amount: 100 }, { date: '2026-03-05', amount: -30 }];
+  assert.deepEqual(balanceHistory(months, 570, tx, []), [null, 600, 570]);
+  assert.deepEqual(balanceHistory(months, 570, tx, [{ month: '2026-01', balance: 480 }]), [480, 600, 570]);
+  assert.deepEqual(balanceHistory(months, 9, [], [{ month: '2026-02', balance: 5 }, { month: '2026-01', balance: 3 }]), [3, 5, 5]);
+  assert.deepEqual(balanceHistory(months, 9, [], []), [null, null, null]);
+  assert.deepEqual(monthsBetween('2025-11', '2026-02'), ['2025-11', '2025-12', '2026-01', '2026-02']);
+  assert.equal(monthEnd('2028-02'), '2028-02-29');
+});
+
+test('loan owed per month and totals', () => {
+  const lines: LoanLine[] = [
+    { date: '2025-04-24', kind: 'drawdown', amount: 200000, balanceAfter: 200000 },
+    { date: '2025-05-28', kind: 'interest', amount: 2326.9, balanceAfter: null },
+    { date: '2025-05-28', kind: 'principal', amount: 844.69, balanceAfter: 199155.31 },
+    { date: '2025-05-29', kind: 'principal', amount: 2100, balanceAfter: 197055.31 },
+    { date: '2025-05-29', kind: 'interest', amount: 64.19, balanceAfter: null },
+  ];
+  assert.deepEqual(loanOwed(['2025-03', '2025-04', '2025-05', '2025-06'], lines), [null, 200000, 197055.31, 197055.31]);
+  const t = loanTotals(lines, '2025-06-15');
+  close(t.principalRepaid, 2944.69);
+  close(t.interestPaid, 2391.09);
+  assert.equal(t.borrowed, 200000);
+  assert.equal(t.owed, 197055.31);
+});
+
+test('mBank loan history CSV', () => {
+  const csv = [
+    '"Historia kredytu z dnia: 01-11-2026";', '',
+    '"#Data";"#Data księgowania";"#Opis";"#Kwota";"#Waluta";"#Kwota pozostała do spłaty";"#Waluta"',
+    '"24-04-2025";"24-04-2025";"otwarcie kredytu - kapitał";"200000.00";"PLN";"200000.00";"PLN"',
+    '"28-05-2025";"28-05-2025";"zmiana wysokości odsetek";"0.00";"";"0.00";""',
+    '"28-05-2025";"28-05-2025";"spłata raty - odsetki";"2326.90";"PLN";"0.00";"PLN"',
+    '"29-05-2025";"29-05-2025";"częś.spłata kredytu - kapitał";"2100.00";"PLN";"197055.31";"PLN"',
+  ].join('\r\n');
+  assert.deepEqual(parseLoanHistory(csv).map((e) => [e.date, e.kind, e.amount, e.balanceAfter]), [
+    ['2025-04-24', 'drawdown', 200000, 200000],
+    ['2025-05-28', 'interest', 2326.9, null],
+    ['2025-05-29', 'principal', 2100, 197055.31],
+  ]);
 });

@@ -239,3 +239,62 @@ export function dateChunks(from: string, to: string, days = 360): [string, strin
   }
   return out;
 }
+
+// ---------------------------------------------------------------- net worth over time
+
+/** The last day of month `m` (YYYY-MM). */
+export const monthEnd = (m: string) => addDays(addMonths(`${m}-01`, 1), -1);
+
+/** Every month from `from` to `to` (YYYY-MM, inclusive). */
+export function monthsBetween(from: string, to: string): string[] {
+  const out: string[] = [];
+  for (let m = from; m <= to; m = addMonths(`${m}-01`, 1).slice(0, 7)) out.push(m);
+  return out;
+}
+
+/**
+ * An account's balance at the end of each month, null before anything is known.
+ * From its first transaction on, worked back from today's balance by undoing later transactions;
+ * before that (and for accounts without transactions) the latest balance recorded for a month carries forward.
+ */
+export function balanceHistory(
+  months: string[], current: number,
+  transactions: { date: string; amount: number }[], snapshots: { month: string; balance: number }[],
+): (number | null)[] {
+  const firstTx = transactions.reduce<string | null>((lo, t) => (lo === null || t.date < lo ? t.date : lo), null)?.slice(0, 7) ?? null;
+  const recorded = [...snapshots].sort((a, b) => a.month.localeCompare(b.month));
+  return months.map((m) => {
+    if (firstTx !== null && m >= firstTx) {
+      const end = monthEnd(m);
+      return transactions.reduce((bal, t) => (t.date > end ? bal - t.amount : bal), current);
+    }
+    const last = recorded.filter((s) => s.month <= m).at(-1);
+    return last ? last.balance : null;
+  });
+}
+
+export interface LoanLine { date: string; kind: 'drawdown' | 'principal' | 'interest'; amount: number; balanceAfter: number | null }
+
+/** What was still owed at the end of each month by a loan's history, null before it was drawn. */
+export function loanOwed(months: string[], lines: LoanLine[]): (number | null)[] {
+  // within a day the smallest balance is the last one (payments only lower it)
+  const known = lines.filter((l) => l.balanceAfter !== null)
+    .sort((a, b) => a.date.localeCompare(b.date) || b.balanceAfter! - a.balanceAfter!);
+  return months.map((m) => {
+    const end = monthEnd(m);
+    const last = known.filter((l) => l.date <= end).at(-1);
+    return last ? last.balanceAfter : null;
+  });
+}
+
+/** Totals of a loan's history: borrowed, repaid, interest (all time and the 12 months up to `today`). */
+export function loanTotals(lines: LoanLine[], today: string) {
+  const sum = (kind: LoanLine['kind'], from = '') => lines.filter((l) => l.kind === kind && l.date >= from).reduce((t, l) => t + l.amount, 0);
+  const yearAgo = addMonths(today, -12);
+  const owed = loanOwed([today.slice(0, 7)], lines)[0];
+  return {
+    borrowed: sum('drawdown'), principalRepaid: sum('principal'), interestPaid: sum('interest'),
+    principalLast12: sum('principal', yearAgo), interestLast12: sum('interest', yearAgo),
+    owed, firstDate: lines.map((l) => l.date).sort()[0] ?? null, lastDate: lines.map((l) => l.date).sort().at(-1) ?? null,
+  };
+}
