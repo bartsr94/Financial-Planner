@@ -8,6 +8,6 @@ export function useGet<T>(path: string) {
   const load = useCallback(() => {
     api<T>(path).then((d) => { setData(d); setError(''); }).catch((e) => setError(String(e.message ?? e)));
   }, [path]);
-  useEffect(load, [load]);
+  useEffect(() => { load(); }, [load]);
   return { data, error, reload: load };
 }

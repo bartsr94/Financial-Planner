@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api, fmtDate, fmtMoneyExact, type Account, type Tx } from '../api.ts';
 import { useGet } from '../hooks.ts';
 
@@ -6,8 +6,13 @@ export function Transactions() {
   const [account, setAccount] = useState('');
   const [category, setCategory] = useState('');
   const [q, setQ] = useState('');
-  const query = new URLSearchParams({ account, category, q }).toString();
-  const { data: txs, error, reload } = useGet<Tx[]>(`/transactions?${query}`);
+  const [page, setPage] = useState(1);
+  const filters = new URLSearchParams({ account, category, q }).toString();
+  useEffect(() => { setPage(1); }, [filters]);
+  useEffect(() => { window.scrollTo(0, 0); }, [page]);
+  const { data, error, reload } = useGet<{ rows: Tx[]; total: number; size: number }>(`/transactions?${filters}&page=${page}&size=${PAGE_SIZE}`);
+  const txs = data?.rows;
+  const pages = data ? Math.max(1, Math.ceil(data.total / data.size)) : 1;
   const { data: accounts } = useGet<Account[]>('/accounts');
   const { data: meta } = useGet<{ categories: string[] }>('/meta');
   const { data: rules, reload: reloadRules } = useGet<{ id: number; pattern: string; category: string }[]>('/rules');
@@ -96,11 +101,21 @@ export function Transactions() {
                 </tr>))}
             </tbody>
           </table>)}
-        {txs && txs.length === 1000 && <div className="sub">Showing the latest 1000. Narrow the filters to see more.</div>}
       </div>
+      {data && data.total > 0 && (
+        <div className="pager">
+          <span className="muted">{(page - 1) * data.size + 1}–{(page - 1) * data.size + data.rows.length} of {data.total}</span>
+          <button className="btn small" disabled={page <= 1} onClick={() => setPage(1)}>« First</button>
+          <button className="btn small" disabled={page <= 1} onClick={() => setPage(page - 1)}>‹ Newer</button>
+          <span>Page {page} of {pages}</span>
+          <button className="btn small" disabled={page >= pages} onClick={() => setPage(page + 1)}>Older ›</button>
+          <button className="btn small" disabled={page >= pages} onClick={() => setPage(pages)}>Last »</button>
+        </div>)}
     </>
   );
 }
+
+const PAGE_SIZE = 100;
 
 // Suggest the merchant, not the bank's boilerplate ("ZAKUP PRZY UŻYCIU KARTY…", "BLIK…", "PRZELEW…").
 const merchantOf = (d: string) =>

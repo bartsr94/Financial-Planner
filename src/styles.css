@@ -147,3 +147,5 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; 
 .tx-merchant { font-weight: 500; }
 .tx-desc .sub { font-size: 12px; }
 .tx-account { white-space: nowrap; color: var(--text-2); font-size: 13px; }
+.pager { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.pager .muted { margin-right: auto; }

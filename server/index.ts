@@ -86,7 +86,10 @@ app.get('/api/transactions', (req, res) => {
   // Text search is done here: SQLite's LIKE does not fold Polish capitals.
   const needle = typeof q.q === 'string' ? normText(q.q) : '';
   const found = needle ? rows.filter((r) => normText(String(r.description)).includes(needle)) : rows;
-  res.json(found.slice(0, 1000));
+  // one page at a time: rendering every row (each with its own category list) is what made the page slow
+  const size = Math.min(500, Math.max(1, Math.floor(Number(q.size ?? 100)) || 100));
+  const page = Math.max(1, Math.floor(Number(q.page ?? 1)) || 1);
+  res.json({ rows: found.slice((page - 1) * size, page * size), total: found.length, page, size });
 });
 
 app.patch('/api/transactions/:id', (req, res) => {
