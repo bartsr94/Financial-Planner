@@ -173,17 +173,28 @@ export function Sparkline({ values, color = 'var(--series-1)' }: { values: numbe
 /** One line: values per month, null where nothing is known yet (the line starts at its first value). */
 export interface LineSeries { key: string; label: string; color: string; values: (number | null)[] }
 
+interface LineChartProps {
+  months: string[];
+  series: LineSeries[];
+  height?: number;
+  format: (n: number) => string;
+  /** false fits the axis to the data, so a large value that moves a little shows its movement */
+  zeroBased?: boolean;
+  /** extra lines under the series values in the tooltip */
+  tooltipExtra?: (i: number) => ReactNode;
+}
+
 /** Monthly lines on one axis, with a crosshair and a tooltip listing every series at the hovered month. */
-export function LineChart({ months, series, height = 260, format }: { months: string[]; series: LineSeries[]; height?: number; format: (n: number) => string }) {
+export function LineChart({ months, series, height = 260, format, zeroBased = true, tooltipExtra }: LineChartProps) {
   const [wrapRef, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
 
   const n = months.length;
   const values = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  const max = Math.max(0, ...values), min = Math.min(0, ...values);
+  const max = Math.max(...(zeroBased ? [0] : []), ...values), min = Math.min(...(zeroBased ? [0] : []), ...values);
   const step = niceStep(max - min, 4);
   const top = Math.ceil(max / step) * step || step;
-  const bottom = Math.floor(min / step) * step;
+  const bottom = Math.min(Math.floor(min / step) * step, top - step);
 
   const pad = { l: 44, r: 12, t: 10, b: 26 };
   const plotW = Math.max(0, width - pad.l - pad.r);
@@ -221,6 +232,9 @@ export function LineChart({ months, series, height = 260, format }: { months: st
             const pts = s.values.map((v, i) => (v === null ? null : `${x(i)},${y(v)}`)).filter(Boolean);
             return <polyline key={s.key} points={pts.join(' ')} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />;
           })}
+          {hover === null && series.map((s) => s.values.at(-1) != null && (
+            <circle key={s.key} cx={x(n - 1)} cy={y(s.values.at(-1)!)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
+          ))}
           {hover !== null && series.map((s) => s.values[hover] !== null && (
             <circle key={s.key} cx={x(hover)} cy={y(s.values[hover]!)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
           ))}
@@ -236,6 +250,7 @@ export function LineChart({ months, series, height = 260, format }: { months: st
               <span>{s.label}</span><b>{s.values[hover] === null ? '–' : format(s.values[hover]!)}</b>
             </div>
           ))}
+          {tooltipExtra?.(hover)}
         </div>
       )}
     </div>

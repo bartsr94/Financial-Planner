@@ -24,6 +24,7 @@ const colorFor = (categories: string[], c: string) => {
 interface NetWorthMonth { month: string; cash: number; investments: number; assets: number; debt: number; netWorth: number }
 
 const RANGES = [['6', '6M'], ['12', '12M'], ['24', '2Y'], ['0', 'All']] as const;
+const NW_VIEWS = [['net', 'Net worth'], ['parts', 'Owned and owed']] as const;
 const OWNERS = [['personal', 'Personal'], ['business', 'Business'], ['all', 'Both']] as const;
 
 export function Dashboard() {
@@ -33,6 +34,7 @@ export function Dashboard() {
   const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
   const { data: nw } = useGet<NetWorthMonth[]>('/networth-history');
   const [selected, setSelected] = useState<string | null>(null);
+  const [nwView, setNwView] = useState(() => localStorage.getItem('nwView') ?? 'net');
 
   // default to the latest month that has transactions, not a still-empty current month
   useEffect(() => {
@@ -68,11 +70,16 @@ export function Dashboard() {
   const noData = s.netWorth === 0 && !hasFlows;
   // net worth is everything you own, so it ignores the personal/business filter but follows the range
   const nwShown = nw && (range === '0' ? nw : nw.slice(-Number(range)));
-  const nwSeries: LineSeries[] | null = nwShown && nwShown.length > 1 ? [
-    { key: 'nw', label: 'Net worth', color: 'var(--series-1)', values: nwShown.map((p) => p.netWorth) },
-    { key: 'owned', label: 'Owned', color: 'var(--series-3)', values: nwShown.map((p) => p.cash + p.investments + p.assets) },
-    { key: 'owed', label: 'Owed', color: 'var(--series-2)', values: nwShown.map((p) => -p.debt) },
-  ] : null;
+  // Net worth alone gets an axis fitted to it, since against what you own and owe it barely moves.
+  // "Owned and owed" shows the two sides it is the gap between, on a zero-based axis.
+  const nwSeries: LineSeries[] | null = !nwShown || nwShown.length < 2 ? null : nwView === 'net'
+    ? [{ key: 'nw', label: 'Net worth', color: 'var(--series-1)', values: nwShown.map((p) => p.netWorth) }]
+    : [
+      { key: 'owned', label: 'Owned', color: 'var(--series-3)', values: nwShown.map((p) => p.cash + p.investments + p.assets) },
+      { key: 'owed', label: 'Owed', color: 'var(--series-2)', values: nwShown.map((p) => -p.debt) },
+    ];
+  const nwChange = nwShown && nwShown.length > 1 ? nwShown.at(-1)!.netWorth - nwShown[0].netWorth : 0;
+  const pickNwView = (v: string) => { setNwView(v); localStorage.setItem('nwView', v); };
 
   return (
     <>
@@ -118,10 +125,31 @@ export function Dashboard() {
       {nwSeries && (
         <div className="card">
           <div className="card-head">
-            <h2>Net worth over time</h2>
-            <Legend items={nwSeries.map((x) => ({ label: x.label, color: x.color }))} />
+            <div>
+              <h2>Net worth over time</h2>
+              <div className="sub">
+                <b className={nwChange >= 0 ? 'good' : 'bad'}>{nwChange >= 0 ? '+' : '−'}{fmtMoney(Math.abs(nwChange))}</b> since {monthLabel(nwShown![0].month, true)}
+              </div>
+            </div>
+            <div className="filters">
+              {nwSeries.length > 1 && <Legend items={nwSeries.map((x) => ({ label: x.label, color: x.color }))} />}
+              <div className="segmented" role="group" aria-label="Net worth view">
+                {NW_VIEWS.map(([v, label]) => <button key={v} className={nwView === v ? 'on' : ''} onClick={() => pickNwView(v)}>{label}</button>)}
+              </div>
+            </div>
           </div>
-          <LineChart months={nwShown!.map((p) => p.month)} series={nwSeries} format={fmtMoney} height={260} />
+          <LineChart months={nwShown!.map((p) => p.month)} series={nwSeries} format={fmtMoney} height={260} zeroBased={nwView !== 'net'}
+            tooltipExtra={(i) => {
+              const p = nwShown![i];
+              const rows: [string, number][] = [['Cash', p.cash], ['Investments', p.investments], ['Property', p.assets], ['Debt', p.debt]];
+              return <>
+                {nwView !== 'net' && <div className="tt-row total"><span /><span>Net worth</span><b>{fmtMoney(p.netWorth)}</b></div>}
+                {rows.filter(([, v]) => v).map(([label, v], k) => (
+                  <div className={k === 0 ? 'tt-row total' : 'tt-row'} key={label}><span /><span>{label}</span><b>{fmtMoney(v)}</b></div>
+                ))}
+                {i > 0 && <div className="tt-row"><span /><span>Change on month</span><b>{fmtMoney(p.netWorth - nwShown![i - 1].netWorth)}</b></div>}
+              </>;
+            }} />
           <div className="sub">Month-end balances. Accounts with transactions are worked back from today's balance; property, investments and loans use the balance recorded for each month.</div>
         </div>
       )}
