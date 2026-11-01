@@ -6,6 +6,20 @@ import { parseAmount, parseDate } from '../../shared/parse.ts';
 
 const guess = (header: string[], re: RegExp) => Math.max(0, header.findIndex((h) => re.test(h)));
 
+// Papa's auto-detect is thrown by preamble lines (mBank has tab-indented address lines), so pick the
+// delimiter by how many lines contain it. Decimal commas are in every row, so ';' and tab get first say.
+function detectDelimiter(text: string): string {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  for (const d of [';', '\t']) {
+    if (lines.filter((l) => l.includes(d)).length > lines.length / 2) return d;
+  }
+  return ',';
+}
+
+// mBank pads descriptions with runs of spaces, and tags card payments still pending; the tag disappears
+// once they settle, which would otherwise make a re-import look like new transactions.
+const tidy = (s: string) => s.replace(/transakcja nierozliczona/gi, '').replace(/\s+/g, ' ').trim();
+
 export function ImportPage() {
   const { data: accounts } = useGet<Account[]>('/accounts');
   const [accountId, setAccountId] = useState('');
@@ -21,7 +35,7 @@ export function ImportPage() {
   const grid = useMemo<string[][]>(() => {
     if (!buffer) return [];
     const text = new TextDecoder(encoding).decode(buffer);
-    return Papa.parse<string[]>(text, { skipEmptyLines: true }).data;
+    return Papa.parse<string[]>(text, { skipEmptyLines: true, delimiter: detectDelimiter(text) }).data;
   }, [buffer, encoding]);
 
   // Auto-detect the header row (banks add preamble lines) and guess the columns.
@@ -49,7 +63,7 @@ export function ImportPage() {
       const date = parseDate(r[cols.date] ?? '');
       const amount = parseAmount(r[cols.amount] ?? '');
       if (!date || amount === null) { skipped++; continue; }
-      const description = [r[cols.desc], cols.desc2 >= 0 ? r[cols.desc2] : ''].map((x) => (x ?? '').trim()).filter(Boolean).join(' · ');
+      const description = [r[cols.desc], cols.desc2 >= 0 ? r[cols.desc2] : ''].map((x) => tidy(x ?? '')).filter(Boolean).join(' · ');
       out.push({ date, amount, description });
     }
     return { out, skipped };
