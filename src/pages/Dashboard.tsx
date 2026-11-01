@@ -4,7 +4,7 @@ import { useGet } from '../hooks.ts';
 import { BarChart, Legend, Sparkline, monthLabel, type Series } from '../charts.tsx';
 
 interface Summary {
-  netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number;
+  netWorth: number; cash: number; investments: number; assets: number; debt: number; businessCash: number; missingRates: string[];
   avgMonthlyExpenses: number;
   fire: { fiNumber: number; leanFi: number; fatFi: number; coastFi: number; percentToFi: number; investedCoversYearly: number; coastReached: boolean; returnRate: number };
   bills: { dueNext30Days: number; overdueCount: number; overdueTotal: number; next: { id: number; name: string; amount: number; date: string; status: string }[] };
@@ -94,7 +94,8 @@ export function Dashboard() {
           <h2>Net worth</h2>
           <div className="kpi-row"><div className="big">{fmtMoney(s.netWorth)}</div><Sparkline values={(nw ?? []).map((p) => p.netWorth)} /></div>
           <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}{s.debt ? ` · Debt ${fmtMoney(s.debt)}` : ''}</div>
-          {s.businessCash !== 0 && <div className="sub">Includes {fmtMoney(s.businessCash)} in the business account</div>}
+          {s.businessCash !== 0 && <div className="sub">Includes {fmtMoney(s.businessCash)} in business accounts</div>}
+          {s.missingRates.length > 0 && <div className="sub bad">No exchange rate yet for {s.missingRates.join(', ')}, so those accounts count as 0. The app fetches NBP rates when it is online.</div>}
         </div>
         <Kpi title="Income" value={cur?.income} before={prev?.income} goodWhenUp />
         <Kpi title="Spending" value={cur?.expenses} before={prev?.expenses} goodWhenUp={false} />

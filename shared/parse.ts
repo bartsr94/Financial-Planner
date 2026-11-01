@@ -31,3 +31,12 @@ function validDate(y: number, m: number, d: number): string | null {
   if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d) return null;
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
+
+/** Currencies an account can hold. NBP's table A publishes a daily rate for all of these. */
+export const CURRENCIES = ['PLN', 'EUR', 'USD', 'GBP', 'CHF', 'CZK', 'SEK', 'NOK', 'DKK', 'CAD', 'AUD'] as const;
+
+/** The currency code a bank writes after an amount ("-385,48 PLN" -> "PLN"), or null if there is none. */
+export function parseCurrency(raw: string): string | null {
+  const m = /([A-Za-z]{3})\s*$/.exec(raw.trim());
+  return m ? m[1].toUpperCase() : null;
+}

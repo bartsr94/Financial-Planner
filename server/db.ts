@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS category_rules (
   category TEXT NOT NULL
 );
 
+-- NBP table A mid rates: PLN per 1 unit of currency, one row per business day
+CREATE TABLE IF NOT EXISTS fx_rates (
+  currency TEXT NOT NULL,
+  date TEXT NOT NULL,             -- YYYY-MM-DD
+  rate REAL NOT NULL,
+  PRIMARY KEY (currency, date)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

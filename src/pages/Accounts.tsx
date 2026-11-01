@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { api, fmtMoneyExact, type Account } from '../api.ts';
+import { api, fmtMoney, fmtMoneyIn, type Account } from '../api.ts';
+import { CURRENCIES } from '../../shared/parse.ts';
 import { useGet } from '../hooks.ts';
 
 const KINDS: { value: Account['kind']; label: string }[] = [
@@ -8,7 +9,7 @@ const KINDS: { value: Account['kind']; label: string }[] = [
   { value: 'asset', label: 'Asset (property, vehicle)' },
   { value: 'debt', label: 'Debt (mortgage, loan) — enter as negative' },
 ];
-const blank = { name: '', bank: '', kind: 'cash' as Account['kind'], owner: 'personal' as Account['owner'], balance: '' };
+const blank = { name: '', bank: '', kind: 'cash' as Account['kind'], owner: 'personal' as Account['owner'], currency: 'PLN', balance: '' };
 
 export function Accounts() {
   const { data: accounts, error, reload } = useGet<Account[]>('/accounts');
@@ -43,26 +44,32 @@ export function Accounts() {
             <label className="field">Owner
               <select value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value as Account['owner'] })}>
                 <option value="personal">Personal</option><option value="business">Business</option></select></label>
-            <label className="field">Balance (PLN)<input value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} style={{ width: 120 }} /></label>
+            <label className="field">Currency
+              <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })}>
+                {CURRENCIES.map((c) => <option key={c}>{c}</option>)}</select></label>
+            <label className="field">Balance ({form.currency})<input value={form.balance} onChange={(e) => setForm({ ...form, balance: e.target.value })} style={{ width: 120 }} /></label>
             <button className="btn primary" onClick={save}>Save</button>
             <button className="btn" onClick={() => setForm(null)}>Cancel</button>
           </div>
+          {form.currency !== 'PLN' && <div className="sub">Keep one account per currency, as the bank does (e.g. "mBank firma EUR"). Totals convert it to złoty at the NBP rate.</div>}
           {msg && <div className="error">{msg}</div>}
         </div>)}
 
       {groups.map(([owner, title]) => {
         const list = accounts.filter((a) => a.owner === owner);
         if (list.length === 0) return null;
+        const total = list.reduce((t, a) => t + (a.balance_pln ?? 0), 0);
         return (
           <div className="card scroll" key={owner} style={{ marginBottom: 12 }}>
-            <h2>{title}</h2>
+            <div className="card-head"><h2>{title}</h2><span className="muted small">{fmtMoney(total)} in total</span></div>
             <table>
               <thead><tr><th>Account</th><th>Type</th><th className="num">Balance</th><th /></tr></thead>
               <tbody>{list.map((a) => (
                 <tr key={a.id}>
                   <td>{a.name}<div className="sub">{a.bank}</div></td>
                   <td>{a.kind}</td>
-                  <td className={`num ${a.balance < 0 ? 'bad' : ''}`}>{fmtMoneyExact(a.balance)}</td>
+                  <td className={`num ${a.balance < 0 ? 'bad' : ''}`}>{fmtMoneyIn(a.balance, a.currency)}
+                    {a.currency !== 'PLN' && <div className="sub">{a.balance_pln === null ? 'no exchange rate yet' : `≈ ${fmtMoney(a.balance_pln)}`}</div>}</td>
                   <td className="num" style={{ whiteSpace: 'nowrap' }}>
                     <button className="btn small" onClick={() => setForm({ ...a, balance: String(a.balance) })}>Edit</button>{' '}
                     <button className="btn small" onClick={() => { if (confirm(`Archive ${a.name}?`)) api(`/accounts/${a.id}`, 'DELETE').then(reload); }}>✕</button>

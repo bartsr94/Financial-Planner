@@ -6,6 +6,8 @@ import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
   todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
 } from './logic.ts';
+import { ensureRates, missingRates, rateSql } from './fx.ts';
+import { CURRENCIES } from '../shared/parse.ts';
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -17,6 +19,10 @@ const run = (sql: string, ...p: (string | number | null)[]) => db.prepare(sql).r
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 const num = (v: unknown, fallback = 0): number => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
 const bad = (res: express.Response, msg: string) => res.status(400).json({ error: msg });
+const currencyOf = (v: unknown, fallback = 'PLN') => (CURRENCIES as readonly string[]).includes(str(v)) ? str(v) : fallback;
+// an amount or balance in its account's currency, converted to PLN at the NBP rate of `date` (SQL expressions)
+const TODAY_SQL = "date('now', 'localtime')";
+const plnSql = (amount: string, date: string) => `(${amount} * ${rateSql('a.currency', date)})`;
 
 app.get('/api/meta', (_req, res) => res.json({ categories: CATEGORIES, today: todayISO() }));
 
@@ -28,8 +34,9 @@ function saveSnapshot(accountId: number, balance: number) {
   );
 }
 
-app.get('/api/accounts', (_req, res) => {
-  res.json(all('SELECT * FROM accounts WHERE archived = 0 ORDER BY owner, kind, name'));
+app.get('/api/accounts', async (_req, res) => {
+  await ensureRates();
+  res.json(all(`SELECT a.*, ${plnSql('a.balance', TODAY_SQL)} AS balance_pln FROM accounts a WHERE a.archived = 0 ORDER BY a.owner, a.kind, a.name`));
 });
 
 app.post('/api/accounts', (req, res) => {
@@ -39,7 +46,7 @@ app.post('/api/accounts', (req, res) => {
   const owner = str(b.owner, 'personal') === 'business' ? 'business' : 'personal';
   const r = run(
     'INSERT INTO accounts (name, bank, kind, owner, currency, balance, source) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    str(b.name), str(b.bank), str(b.kind), owner, str(b.currency, 'PLN'), num(b.balance), str(b.source, 'manual'),
+    str(b.name), str(b.bank), str(b.kind), owner, currencyOf(b.currency), num(b.balance), str(b.source, 'manual'),
   );
   saveSnapshot(Number(r.lastInsertRowid), num(b.balance));
   res.json({ id: Number(r.lastInsertRowid) });
@@ -52,9 +59,9 @@ app.put('/api/accounts/:id', (req, res) => {
   const b = req.body ?? {};
   const balance = b.balance === undefined ? Number(cur.balance) : num(b.balance);
   run(
-    'UPDATE accounts SET name = ?, bank = ?, kind = ?, owner = ?, balance = ? WHERE id = ?',
+    'UPDATE accounts SET name = ?, bank = ?, kind = ?, owner = ?, currency = ?, balance = ? WHERE id = ?',
     str(b.name, String(cur.name)), str(b.bank, String(cur.bank)), str(b.kind, String(cur.kind)),
-    str(b.owner, String(cur.owner)), balance, id,
+    str(b.owner, String(cur.owner)), currencyOf(b.currency, String(cur.currency)), balance, id,
   );
   saveSnapshot(id, balance);
   res.json({ ok: true });
@@ -78,7 +85,7 @@ app.get('/api/transactions', (req, res) => {
     if (q.category === '__none') where.push('t.category IS NULL'); else { where.push('t.category = ?'); p.push(q.category); }
   }
   const rows = all(
-    `SELECT t.id, t.account_id, a.name AS account, a.owner, t.date, t.amount, t.description, t.category
+    `SELECT t.id, t.account_id, a.name AS account, a.owner, a.currency, t.date, t.amount, t.description, t.category
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.id DESC`,
     ...p,
@@ -207,24 +214,27 @@ app.get('/api/bills/calendar', (req, res) => {
 });
 
 // ------------------------------------------------------------------ statement import
-interface ImportRow { date: string; amount: number; description: string }
+interface ImportRow { date: string; amount: number; description: string; currency?: string | null }
 
 app.post('/api/import', (req, res) => {
   const accountId = Number(req.body?.accountId);
   const rows = req.body?.rows as ImportRow[] | undefined;
-  if (!one('SELECT id FROM accounts WHERE id = ?', accountId)) return bad(res, 'unknown account');
+  const account = one('SELECT id, currency FROM accounts WHERE id = ?', accountId);
+  if (!account) return bad(res, 'unknown account');
   if (!Array.isArray(rows)) return bad(res, 'rows required');
 
   const rules = all('SELECT pattern, category FROM category_rules ORDER BY id') as { pattern: string; category: string }[];
   const bills = all('SELECT * FROM bills WHERE active = 1 AND match_pattern IS NOT NULL') as BillRow[];
   const seen = new Map<string, number>();
-  let added = 0, duplicates = 0, billsPaid = 0;
+  let added = 0, duplicates = 0, billsPaid = 0, otherCurrency = 0;
 
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   db.exec('BEGIN');
   try {
     for (const r of sorted) {
       if (typeof r.date !== 'string' || typeof r.amount !== 'number' || !Number.isFinite(r.amount)) continue;
+      // a line in another currency belongs to a different account; never add it at the wrong value
+      if (r.currency && r.currency !== account.currency) { otherCurrency++; continue; }
       const description = str(r.description);
       const key = `${r.date}|${r.amount.toFixed(2)}|${description}`;
       const occurrence = (seen.get(key) ?? 0) + 1;
@@ -256,7 +266,7 @@ app.post('/api/import', (req, res) => {
     db.exec('ROLLBACK');
     return res.status(500).json({ error: String(e) });
   }
-  res.json({ added, duplicates, billsPaid });
+  res.json({ added, duplicates, billsPaid, otherCurrency });
 });
 
 // ------------------------------------------------------------------ settings, mortgage, summary
@@ -299,28 +309,29 @@ app.get('/api/mortgage', (_req, res) => {
   });
 });
 
-app.get('/api/summary', (_req, res) => {
+app.get('/api/summary', async (_req, res) => {
+  await ensureRates();
   const s = getSettings();
   const today = todayISO();
-  const accts = all('SELECT * FROM accounts WHERE archived = 0') as (Row & { kind: string; balance: number })[];
-  const sum = (kind: string) => accts.filter((a) => a.kind === kind).reduce((t, a) => t + Number(a.balance), 0);
+  const accts = all(`SELECT a.kind, a.owner, ${plnSql('a.balance', TODAY_SQL)} AS pln FROM accounts a WHERE a.archived = 0`) as (Row & { kind: string; owner: string; pln: number | null })[];
+  const sum = (kind: string) => accts.filter((a) => a.kind === kind).reduce((t, a) => t + Number(a.pln ?? 0), 0);
   const cash = sum('cash'), investments = sum('investment'), assets = sum('asset'), debt = sum('debt');
   const netWorth = cash + investments + assets + debt;
-  const business = all("SELECT SUM(balance) AS b FROM accounts WHERE archived = 0 AND owner = 'business' AND kind = 'cash'")[0]?.b ?? 0;
+  const business = accts.filter((a) => a.owner === 'business' && a.kind === 'cash').reduce((t, a) => t + Number(a.pln ?? 0), 0);
 
   // last 6 full months + this month of income / expenses, all accounts (transfers excluded)
   const from = addMonths(today.slice(0, 7) + '-01', -6);
   const months = all(
     `SELECT substr(t.date, 1, 7) AS month,
-            SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
-            SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS expenses
+            SUM(CASE WHEN t.amount > 0 THEN ${plnSql('t.amount', 't.date')} ELSE 0 END) AS income,
+            SUM(CASE WHEN t.amount < 0 THEN -${plnSql('t.amount', 't.date')} ELSE 0 END) AS expenses
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE a.archived = 0 AND t.date >= ? AND COALESCE(t.category, '') <> 'Transfer'
      GROUP BY month ORDER BY month`, from,
   );
   const thisMonth = today.slice(0, 7);
   const byCategory = all(
-    `SELECT COALESCE(t.category, 'Uncategorised') AS category, SUM(-t.amount) AS spent
+    `SELECT COALESCE(t.category, 'Uncategorised') AS category, SUM(-${plnSql('t.amount', 't.date')}) AS spent
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE a.archived = 0 AND t.amount < 0 AND substr(t.date, 1, 7) = ?
        AND COALESCE(t.category, '') <> 'Transfer'
@@ -345,7 +356,7 @@ app.get('/api/summary', (_req, res) => {
   const overdue = upcoming.filter((u) => u.date < today);
 
   res.json({
-    today, netWorth, cash, investments, assets, debt, businessCash: Number(business),
+    today, netWorth, cash, investments, assets, debt, businessCash: business, missingRates: missingRates(),
     months, byCategory, avgMonthlyExpenses: avgMonthly, fire,
     bills: {
       dueNext30Days: upcoming.reduce((t, u) => t + u.amount, 0),
@@ -358,14 +369,15 @@ app.get('/api/summary', (_req, res) => {
 
 // Month-by-month income and spending for the dashboard charts. `months` = how many months back (0 = all history).
 // `owner` = personal | business | all (the default).
-app.get('/api/trends', (req, res) => {
+app.get('/api/trends', async (req, res) => {
+  await ensureRates();
   const thisMonth = todayISO().slice(0, 7);
   const asked = str(req.query.owner, 'all');
   const owner = ['personal', 'business'].includes(asked) ? asked : 'all';
   const rows = (all(
     `SELECT substr(t.date, 1, 7) AS month, COALESCE(t.category, 'Uncategorised') AS category,
-            SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
-            SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS expenses
+            SUM(CASE WHEN t.amount > 0 THEN ${plnSql('t.amount', 't.date')} ELSE 0 END) AS income,
+            SUM(CASE WHEN t.amount < 0 THEN -${plnSql('t.amount', 't.date')} ELSE 0 END) AS expenses
      FROM transactions t JOIN accounts a ON a.id = t.account_id
      WHERE (a.owner = ? OR ? = 'all') AND a.archived = 0 AND COALESCE(t.category, '') <> 'Transfer'
      GROUP BY month, category ORDER BY month`, owner, owner,
@@ -381,9 +393,11 @@ app.get('/api/trends', (req, res) => {
   res.json({ ...monthlyTrends(rows, from, to), rows: inRange, latestWithData: rows.at(-1)?.month ?? null, owner });
 });
 
-app.get('/api/networth-history', (_req, res) => {
+app.get('/api/networth-history', async (_req, res) => {
+  await ensureRates();
   res.json(all(
-    `SELECT s.month, SUM(s.balance) AS netWorth FROM balance_snapshots s
+    // each month's balances at the rate of that month's last business day
+    `SELECT s.month, SUM(${plnSql('s.balance', "s.month || '-31'")}) AS netWorth FROM balance_snapshots s
      JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0
      GROUP BY s.month ORDER BY s.month`,
   ));

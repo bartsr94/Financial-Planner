@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import Papa from 'papaparse';
-import { api, fmtMoneyExact, type Account } from '../api.ts';
+import { api, fmtMoneyIn, type Account } from '../api.ts';
 import { useGet } from '../hooks.ts';
-import { parseAmount, parseDate } from '../../shared/parse.ts';
+import { parseAmount, parseCurrency, parseDate } from '../../shared/parse.ts';
 
 const guess = (header: string[], re: RegExp) => Math.max(0, header.findIndex((h) => re.test(h)));
 
@@ -22,7 +22,8 @@ const tidy = (s: string) => s.replace(/transakcja nierozliczona/gi, '').replace(
 
 export function ImportPage() {
   const { data: accounts } = useGet<Account[]>('/accounts');
-  const [accountId, setAccountId] = useState('');
+  // which account each currency's lines go into; '' is for files that print no currency
+  const [target, setTarget] = useState<Record<string, string>>({});
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [fileName, setFileName] = useState('');
   const [encoding, setEncoding] = useState('utf-8');
@@ -57,17 +58,28 @@ export function ImportPage() {
   }, [grid, hdr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => {
-    const out: { date: string; amount: number; description: string }[] = [];
+    const out: { date: string; amount: number; description: string; currency: string | null }[] = [];
     let skipped = 0;
     for (const r of grid.slice(hdr + 1)) {
       const date = parseDate(r[cols.date] ?? '');
       const amount = parseAmount(r[cols.amount] ?? '');
       if (!date || amount === null) { skipped++; continue; }
       const description = [r[cols.desc], cols.desc2 >= 0 ? r[cols.desc2] : ''].map((x) => tidy(x ?? '')).filter(Boolean).join(' · ');
-      out.push({ date, amount, description });
+      out.push({ date, amount, description, currency: parseCurrency(r[cols.amount] ?? '') });
     }
     return { out, skipped };
   }, [grid, hdr, cols]);
+
+  // A file can hold several currencies (mBank exports every account you tick), so lines are split by currency.
+  const groups = useMemo(() => {
+    const m = new Map<string, typeof rows.out>();
+    for (const r of rows.out) m.set(r.currency ?? '', [...(m.get(r.currency ?? '') ?? []), r]);
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [rows]);
+  // accounts a group may go into: any account for files without a currency, else accounts in that currency
+  const choices = (cur: string) => (accounts ?? []).filter((a) => !cur || a.currency === cur);
+  const targetOf = (cur: string) => target[cur] ?? (cur && choices(cur).length === 1 ? String(choices(cur)[0].id) : '');
+  const ready = groups.filter(([cur]) => targetOf(cur));
 
   function onFile(f: File | undefined) {
     if (!f) return;
@@ -92,8 +104,13 @@ export function ImportPage() {
   async function doImport() {
     setBusy(true); setError(''); setResult('');
     try {
-      const r = await api<{ added: number; duplicates: number; billsPaid: number }>('/import', 'POST', { accountId: Number(accountId), rows: rows.out });
-      setResult(`Imported ${r.added} new transactions. ${r.duplicates} were already there. ${r.billsPaid} bill(s) marked paid.`);
+      const lines: string[] = [];
+      for (const [cur, list] of ready) {
+        const r = await api<{ added: number; duplicates: number; billsPaid: number }>('/import', 'POST', { accountId: Number(targetOf(cur)), rows: list });
+        const name = accounts?.find((a) => a.id === Number(targetOf(cur)))?.name;
+        lines.push(`${name}: ${r.added} new transactions, ${r.duplicates} already there, ${r.billsPaid} bill(s) marked paid.`);
+      }
+      setResult(lines.join(' '));
     } catch (e) { setError((e as Error).message); }
     setBusy(false);
   }
@@ -103,11 +120,6 @@ export function ImportPage() {
       <div className="card" style={{ marginBottom: 12 }}>
         <h2>Import a bank statement (CSV)</h2>
         <div className="row">
-          <label className="field">Into account
-            <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-              <option value="">Choose…</option>
-              {accounts?.map((a) => <option key={a.id} value={a.id}>{a.name}{a.owner === 'business' ? ' (business)' : ''}</option>)}
-            </select></label>
           <label className="field">File<input type="file" accept=".csv,.txt" onChange={(e) => onFile(e.target.files?.[0])} /></label>
           {buffer && <label className="field">Encoding
             <select value={encoding} onChange={(e) => setEncoding(e.target.value)}>
@@ -132,18 +144,28 @@ export function ImportPage() {
                   {k === 'desc2' && <option value={-1}>none</option>}
                   {header.map((h, i) => <option key={i} value={i}>{i + 1}: {h.slice(0, 30)}</option>)}</select></label>))}
           </div>
+          <div className="row">
+            {(groups.length ? groups : [['', []] as const]).map(([cur, list]) => (
+              <label className="field" key={cur}>{cur ? `${list.length} ${cur} lines into` : 'Into account'}
+                <select value={targetOf(cur)} onChange={(e) => setTarget({ ...target, [cur]: e.target.value })}>
+                  <option value="">{cur && !choices(cur).length ? `No ${cur} account yet` : groups.length > 1 ? 'Skip these' : 'Choose…'}</option>
+                  {choices(cur).map((a) => <option key={a.id} value={a.id}>{a.name}{a.owner === 'business' ? ' (business)' : ''}</option>)}
+                </select></label>))}
+          </div>
+          {groups.some(([cur]) => cur && !choices(cur).length) && (
+            <div className="sub">Lines are only imported into an account in their own currency. Add the missing account on the Accounts page, then come back.</div>)}
           <div className="sub">
             {rows.out.length} usable rows{rows.skipped ? `, ${rows.skipped} skipped (no valid date or amount)` : ''}. Preview:
           </div>
           <div className="scroll"><table>
             <thead><tr><th>Date</th><th>Description</th><th className="num">Amount</th></tr></thead>
             <tbody>{rows.out.slice(0, 6).map((r, i) => (
-              <tr key={i}><td>{r.date}</td><td>{r.description.slice(0, 90)}</td><td className="num">{fmtMoneyExact(r.amount)}</td></tr>))}</tbody>
+              <tr key={i}><td>{r.date}</td><td>{r.description.slice(0, 90)}</td><td className="num">{fmtMoneyIn(r.amount, r.currency ?? 'PLN')}</td></tr>))}</tbody>
           </table></div>
           <div className="row" style={{ marginTop: 10 }}>
-            <button className="btn primary" disabled={busy || !accountId || rows.out.length === 0} onClick={doImport}>
-              Import {rows.out.length} rows</button>
-            {!accountId && <span className="muted">Choose an account first.</span>}
+            <button className="btn primary" disabled={busy || ready.length === 0} onClick={doImport}>
+              Import {ready.reduce((t, [, list]) => t + list.length, 0)} rows</button>
+            {ready.length === 0 && <span className="muted">Choose an account first.</span>}
           </div>
         </div>)}
       {result && <div className="ok">{result}</div>}

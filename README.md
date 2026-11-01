@@ -25,9 +25,13 @@ For development, `npm run dev` runs the API (port 3001) and Vite (hot reload) to
   match text (for example `TAURON`); an imported payment containing it marks the bill paid.
 - **Transactions**: filter, recategorise, make a rule from a correction.
 - **Accounts**: personal and business. Every account counts towards net worth, spending and FI;
-  the business label only lets the dashboard charts show one side on its own.
+  the business label only lets the dashboard charts show one side on its own. Each account has one
+  currency (keep one account per currency, as the bank does). Totals convert to złoty at the NBP
+  average rate: a transaction at its own day's rate, a balance at today's. Rates are fetched from
+  api.nbp.pl and cached in the database, so the app works offline with the last rates it saw.
 - **Import**: bank CSV statements (mBank, Pekao and others). Handles Polish amounts and dates,
   windows-1250 encoding, preamble lines and `#` headers. Re-importing the same period is safe.
+  A file with several currencies is split, each currency into an account in that currency.
 - **Mortgage**: fixed-rate amortisation with an optional extra monthly payment.
 - **Settings**: FIRE assumptions from the old spreadsheet.
 

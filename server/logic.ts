@@ -1,6 +1,6 @@
 // Pure finance logic: no database, no HTTP. Mirrors the formulas in the FIRE spreadsheet.
 import { createHash } from 'node:crypto';
-export { parseAmount, parseDate } from '../shared/parse.ts';
+export { parseAmount, parseCurrency, parseDate } from '../shared/parse.ts';
 
 export type Frequency = 'weekly' | 'monthly' | 'quarterly' | 'yearly' | 'once';
 
@@ -226,4 +226,16 @@ export function monthlyTrends(rows: TrendRow[], from: string, to: string, topN =
     months.push({ month: m, income, expenses, net: income - expenses, savingsRate: income > 0 ? (income - expenses) / income : null, byCategory });
   }
   return { months, categories };
+}
+
+// ---------------------------------------------------------------- exchange rates
+
+/** Split [from, to] into ranges of at most `days` days (NBP answers at most 367 days per request). */
+export function dateChunks(from: string, to: string, days = 360): [string, string][] {
+  const out: [string, string][] = [];
+  for (let start = from; start <= to; start = addDays(start, days)) {
+    const end = addDays(start, days - 1);
+    out.push([start, end < to ? end : to]);
+  }
+  return out;
 }

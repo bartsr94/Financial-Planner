@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
-  matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseDate, paymentsMade, txHash,
+  dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
 } from './logic.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -115,4 +115,14 @@ test('monthly trends fill empty months, fold small categories into Other, and ke
   assert.equal(t.months[1].savingsRate, null);
   assert.deepEqual(t.months[2].byCategory, { Groceries: 300, Fees: 20, Other: 10 });
   assert.deepEqual(monthlyTrends(rows, '2026-12', '2027-01').months.map((m) => m.month), ['2026-12', '2027-01']);
+});
+
+test('the currency after an amount, and NBP-sized date ranges', () => {
+  assert.equal(parseCurrency('-385,48 PLN'), 'PLN');
+  assert.equal(parseCurrency('1 200,00 eur '), 'EUR');
+  assert.equal(parseCurrency('-12,00'), null);
+  assert.equal(parseAmount('-1 200,50 EUR'), -1200.5);
+  assert.deepEqual(dateChunks('2026-01-01', '2026-01-05', 2), [['2026-01-01', '2026-01-02'], ['2026-01-03', '2026-01-04'], ['2026-01-05', '2026-01-05']]);
+  assert.deepEqual(dateChunks('2025-01-01', '2026-11-01'), [['2025-01-01', '2025-12-26'], ['2025-12-27', '2026-11-01']]);
+  assert.deepEqual(dateChunks('2026-11-02', '2026-11-01'), []);
 });

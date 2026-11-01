@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, fmtDate, fmtMoneyExact, type Account, type Tx } from '../api.ts';
+import { api, fmtDate, fmtMoneyIn, type Account, type Tx } from '../api.ts';
 import { useGet } from '../hooks.ts';
 
 export function Transactions() {
@@ -97,7 +97,7 @@ export function Transactions() {
                     <select value={t.category ?? ''} onChange={(e) => setCat(t, e.target.value)}>
                       <option value="">—</option>{meta?.categories.map((c) => <option key={c}>{c}</option>)}
                     </select></td>
-                  <td className={`num ${t.amount < 0 ? '' : 'good'}`}>{fmtMoneyExact(t.amount)}</td>
+                  <td className={`num ${t.amount < 0 ? '' : 'good'}`}>{fmtMoneyIn(t.amount, t.currency)}</td>
                 </tr>))}
             </tbody>
           </table>)}
