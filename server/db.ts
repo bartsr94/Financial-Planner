@@ -129,8 +129,8 @@ for (const [k, v] of Object.entries(DEFAULTS)) seed.run(k, v);
 
 export const CATEGORIES = [
   'Housing', 'Rent', 'Gas (Home)', 'Electric', 'Internet', 'Insurance', 'Groceries', 'Eating Out',
-  'Gas (Car)', 'Rideshare', 'Public Transit', 'Tolls', 'Entertainment', 'Clothing',
-  'Self Care', 'Debt Repayment', 'Gym', 'Music', 'Education', 'Medical', 'Gifts',
+  'Gas (Car)', 'Rideshare', 'Public Transit', 'Tolls', 'Travel', 'Entertainment', 'Clothing',
+  'Self Care', 'Debt Repayment', 'Gym', 'Music', 'Education', 'Medical', 'Pets', 'Gifts',
   'Charity', 'Fees', 'Taxes', 'Income', 'Transfer', 'Misc',
 ] as const;
 
