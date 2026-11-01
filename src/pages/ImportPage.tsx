@@ -2,9 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Papa from 'papaparse';
 import { api, fmtMoneyIn, type Account } from '../api.ts';
 import { useGet } from '../hooks.ts';
-import { parseAmount, parseCurrency, parseDate } from '../../shared/parse.ts';
-
-const guess = (header: string[], re: RegExp) => Math.max(0, header.findIndex((h) => re.test(h)));
+import { guessColumns, statementLines } from '../../shared/statement.ts';
 
 // Papa's auto-detect is thrown by preamble lines (mBank has tab-indented address lines), so pick the
 // delimiter by how many lines contain it. Decimal commas are in every row, so ';' and tab get first say.
@@ -16,10 +14,6 @@ function detectDelimiter(text: string): string {
   return ',';
 }
 
-// mBank pads descriptions with runs of spaces, and tags card payments still pending; the tag disappears
-// once they settle, which would otherwise make a re-import look like new transactions.
-const tidy = (s: string) => s.replace(/transakcja nierozliczona/gi, '').replace(/\s+/g, ' ').trim();
-
 export function ImportPage() {
   const { data: accounts } = useGet<Account[]>('/accounts');
   // which account each currency's lines go into; '' is for files that print no currency
@@ -28,7 +22,7 @@ export function ImportPage() {
   const [fileName, setFileName] = useState('');
   const [encoding, setEncoding] = useState('utf-8');
   const [headerRow, setHeaderRow] = useState<number | null>(null);
-  const [cols, setCols] = useState({ date: 0, desc: 0, amount: 0, desc2: -1 });
+  const [cols, setCols] = useState({ date: 0, desc: 0, amount: 0, desc2: -1, currency: -1 });
   const [result, setResult] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -51,23 +45,12 @@ export function ImportPage() {
 
   // Re-guess the columns whenever a new file or header row is chosen.
   useEffect(() => {
-    if (header.length) setCols({
-      date: guess(header, /data|date/i), desc: guess(header, /opis|tytu|description|title|details/i),
-      amount: guess(header, /kwota|amount/i), desc2: -1,
-    });
+    if (header.length) setCols(guessColumns(header));
   }, [grid, hdr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => {
-    const out: { date: string; amount: number; description: string; currency: string | null }[] = [];
-    let skipped = 0;
-    for (const r of grid.slice(hdr + 1)) {
-      const date = parseDate(r[cols.date] ?? '');
-      const amount = parseAmount(r[cols.amount] ?? '');
-      if (!date || amount === null) { skipped++; continue; }
-      const description = [r[cols.desc], cols.desc2 >= 0 ? r[cols.desc2] : ''].map((x) => tidy(x ?? '')).filter(Boolean).join(' · ');
-      out.push({ date, amount, description, currency: parseCurrency(r[cols.amount] ?? '') });
-    }
-    return { out, skipped };
+    const { lines, skipped } = statementLines(grid, hdr, cols);
+    return { out: lines, skipped };
   }, [grid, hdr, cols]);
 
   // A file can hold several currencies (mBank exports every account you tick), so lines are split by currency.
@@ -93,12 +76,7 @@ export function ImportPage() {
   }
 
   function applyGuess() {
-    setCols({
-      date: guess(header, /data|date/i),
-      desc: guess(header, /opis|tytu|description|title|details/i),
-      amount: guess(header, /kwota|amount/i),
-      desc2: -1,
-    });
+    setCols(guessColumns(header));
   }
 
   async function doImport() {
@@ -138,10 +116,10 @@ export function ImportPage() {
             <button className="btn" onClick={applyGuess}>Auto-detect columns</button>
           </div>
           <div className="row">
-            {([['date', 'Date'], ['amount', 'Amount (+ in / − out)'], ['desc', 'Description'], ['desc2', 'More description (optional)']] as const).map(([k, label]) => (
+            {([['date', 'Date'], ['amount', 'Amount (+ in / − out)'], ['desc', 'Description'], ['desc2', 'More description (optional)'], ['currency', 'Currency (optional)']] as const).map(([k, label]) => (
               <label className="field" key={k}>{label}
                 <select value={cols[k]} onChange={(e) => setCols({ ...cols, [k]: Number(e.target.value) })}>
-                  {k === 'desc2' && <option value={-1}>none</option>}
+                  {(k === 'desc2' || k === 'currency') && <option value={-1}>none</option>}
                   {header.map((h, i) => <option key={i} value={i}>{i + 1}: {h.slice(0, 30)}</option>)}</select></label>))}
           </div>
           <div className="row">

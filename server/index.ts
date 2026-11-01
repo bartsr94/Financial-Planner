@@ -310,11 +310,11 @@ app.put('/api/settings', (req, res) => {
   res.json(getSettings());
 });
 
-function loanFromSettings(): LoanInputs & { start: string } {
+function loanFromSettings(): LoanInputs & { start: string; currency: string } {
   const s = getSettings();
   return {
     principal: Number(s.loanPrincipal), apr: Number(s.loanApr), years: Number(s.loanYears),
-    extraMonthly: Number(s.loanExtraMonthly), start: s.loanStart,
+    extraMonthly: Number(s.loanExtraMonthly), start: s.loanStart, currency: s.loanCurrency || 'PLN',
   };
 }
 
@@ -472,8 +472,14 @@ app.post('/api/loans/:id/statement', (req, res) => {
   res.json({ added, duplicates, owed: rebuildLoanSnapshots(id) });
 });
 
-/** Every debt account: what is owed month by month, and the statement's totals where one was imported. */
-app.get('/api/loans', (_req, res) => {
+/**
+ * Every debt account: what is owed month by month, and the statement's totals where one was imported.
+ * Amounts are in the loan's own currency; the `owedPln` fields convert at the NBP rate at each month end.
+ */
+app.get('/api/loans', async (_req, res) => {
+  await ensureRates();
+  const pln = (value: number | null, cur: string, month: string) =>
+    value === null ? null : Math.round(value * Number((rateOn.get({ cur, date: monthEnd(month) }) as { rate: number | null }).rate ?? 0) * 100) / 100;
   const thisMonth = todayISO().slice(0, 7);
   const debts = all("SELECT id, name, bank, currency, balance FROM accounts WHERE kind = 'debt' AND archived = 0 ORDER BY name");
   res.json(debts.map((d) => {
@@ -483,9 +489,12 @@ app.get('/api/loans', (_req, res) => {
     const months = snaps.length ? monthsBetween(snaps[0].month, thisMonth) : [];
     const owed = balanceHistory(months, Number(d.balance), [], snaps);
     return {
-      ...d, owed: -Number(d.balance), fromStatement: lines.length > 0,
+      ...d, owed: -Number(d.balance), owedPln: pln(-Number(d.balance), String(d.currency), thisMonth), fromStatement: lines.length > 0,
       totals: lines.length ? loanTotals(lines, todayISO()) : null,
-      history: months.map((month, i) => ({ month, owed: owed[i] === null ? null : -owed[i]!, recorded: snaps.some((s) => s.month === month) })),
+      history: months.map((month, i) => {
+        const o = owed[i] === null ? null : -owed[i]!;
+        return { month, owed: o, owedPln: pln(o, String(d.currency), month), recorded: snaps.some((s) => s.month === month) };
+      }),
     };
   }));
 });

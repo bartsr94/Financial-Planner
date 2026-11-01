@@ -163,14 +163,14 @@ export function amortize(loan: LoanInputs) {
   return { monthlyPayment: pmt, totalInterest, payments: rows.length, rows };
 }
 
-/** How far through the schedule a loan started on `start` (YYYY-MM-DD) is, as of `today`. */
+/** Payments made as of `today` on a loan whose first payment falls on `start` (YYYY-MM-DD), that date's payment included. */
 export function paymentsMade(start: string, today: string): number {
   const [sy, sm] = parseISO(start);
   const [ty, tm, td] = parseISO(today);
   const [, , sd] = parseISO(start);
   let months = (ty - sy) * 12 + (tm - sm);
   if (td < sd) months -= 1;
-  return Math.max(0, months);
+  return Math.max(0, months + 1);
 }
 
 // ---------------------------------------------------------------- CSV statement import helpers

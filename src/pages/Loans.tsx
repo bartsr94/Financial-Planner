@@ -1,14 +1,14 @@
 import { useState } from 'react';
-import { api, fmtDate, fmtMoney } from '../api.ts';
+import { api, fmtDate, fmtMoney, fmtMoneyIn } from '../api.ts';
 import { useGet } from '../hooks.ts';
 import { Legend, LineChart, type LineSeries } from '../charts.tsx';
 import { BalanceHistory } from '../BalanceHistory.tsx';
 import { Mortgage } from './Mortgage.tsx';
 
 interface Loan {
-  id: number; name: string; bank: string; currency: string; balance: number; owed: number; fromStatement: boolean;
+  id: number; name: string; bank: string; currency: string; balance: number; owed: number; owedPln: number | null; fromStatement: boolean;
   totals: { borrowed: number; principalRepaid: number; interestPaid: number; principalLast12: number; interestLast12: number; owed: number | null; firstDate: string | null; lastDate: string | null } | null;
-  history: { month: string; owed: number | null; recorded: boolean }[];
+  history: { month: string; owed: number | null; owedPln: number | null; recorded: boolean }[];
 }
 
 /** A statement file as text: UTF-8 if it is valid UTF-8, else the Windows-1250 Polish banks export. */
@@ -26,7 +26,7 @@ export function Loans() {
     if (!file) return;
     try {
       const r = await api<{ added: number; duplicates: number; owed: number | null }>(`/loans/${loan.id}/statement`, 'POST', { text: await readStatement(file) });
-      setMsg({ ...msg, [loan.id]: `${r.added} lines added, ${r.duplicates} already known.${r.owed !== null ? ` Owed now: ${fmtMoney(r.owed)}.` : ''}` });
+      setMsg({ ...msg, [loan.id]: `${r.added} lines added, ${r.duplicates} already known.${r.owed !== null ? ` Owed now: ${fmtMoneyIn(r.owed, loan.currency, false)}.` : ''}` });
       reload();
     } catch (e) { setMsg({ ...msg, [loan.id]: (e as Error).message }); }
   }
@@ -34,13 +34,13 @@ export function Loans() {
   if (error) return <p className="error">{error}</p>;
   if (!loans) return <p className="muted">Loading…</p>;
 
-  // one line per loan over the months any of them has a balance for
+  // one line per loan over the months any of them has a balance for, in PLN so loans in other currencies add up
   const months = [...new Set(loans.flatMap((l) => l.history.map((h) => h.month)))].sort();
   const series: LineSeries[] = loans.map((l, i) => ({
     key: String(l.id), label: l.name, color: `var(--series-${(i % 7) + 1})`,
-    values: months.map((m) => l.history.find((h) => h.month === m)?.owed ?? null),
+    values: months.map((m) => l.history.find((h) => h.month === m)?.owedPln ?? null),
   }));
-  const total = loans.reduce((t, l) => t + l.owed, 0);
+  const total = loans.reduce((t, l) => t + (l.owedPln ?? 0), 0);
 
   return (
     <>
@@ -63,14 +63,15 @@ export function Loans() {
             <span className="muted small">{l.fromStatement ? `From the bank statement${l.totals?.lastDate ? `, last line ${fmtDate(l.totals.lastDate)}` : ''}` : 'Balances recorded by hand'}</span>
           </div>
           <div className="grid">
-            <div><div className="sub">Owed now</div><div className="big">{fmtMoney(l.owed)}</div></div>
+            <div><div className="sub">Owed now</div><div className="big">{fmtMoneyIn(l.owed, l.currency, false)}</div>
+              {l.currency !== 'PLN' && l.owedPln !== null && <div className="sub">{fmtMoney(l.owedPln)} at today's rate</div>}</div>
             {l.totals && <>
-              <div><div className="sub">Borrowed</div><div className="big">{fmtMoney(l.totals.borrowed)}</div>
+              <div><div className="sub">Borrowed</div><div className="big">{fmtMoneyIn(l.totals.borrowed, l.currency, false)}</div>
                 {l.totals.firstDate && <div className="sub">{fmtDate(l.totals.firstDate)}</div>}</div>
-              <div><div className="sub">Repaid</div><div className="big">{fmtMoney(l.totals.principalRepaid)}</div>
-                <div className="sub">{fmtMoney(l.totals.principalLast12)} in the last 12 months</div></div>
-              <div><div className="sub">Interest paid</div><div className="big">{fmtMoney(l.totals.interestPaid)}</div>
-                <div className="sub">{fmtMoney(l.totals.interestLast12)} in the last 12 months</div></div>
+              <div><div className="sub">Repaid</div><div className="big">{fmtMoneyIn(l.totals.principalRepaid, l.currency, false)}</div>
+                <div className="sub">{fmtMoneyIn(l.totals.principalLast12, l.currency, false)} in the last 12 months</div></div>
+              <div><div className="sub">Interest paid</div><div className="big">{fmtMoneyIn(l.totals.interestPaid, l.currency, false)}</div>
+                <div className="sub">{fmtMoneyIn(l.totals.interestLast12, l.currency, false)} in the last 12 months</div></div>
             </>}
           </div>
           <div className="row" style={{ marginTop: 10 }}>
@@ -79,7 +80,7 @@ export function Loans() {
             <button className="btn" onClick={() => setOpen(open === l.id ? null : l.id)}>{open === l.id ? 'Hide monthly balances' : 'Monthly balances'}</button>
           </div>
           {msg[l.id] && <div className="sub">{msg[l.id]}</div>}
-          {!l.fromStatement && <div className="sub">mBank: Kredyty → the loan → Historia → export CSV. Until then, record what is owed each month by hand.</div>}
+          {!l.fromStatement && <div className="sub">mBank: Kredyty → the loan → Historia → export CSV. Pekao: the loan → Lista operacji → export CSV. Until then, record what is owed each month by hand.</div>}
           {open === l.id && <BalanceHistory account={{ ...l, kind: 'debt' }} onChange={reload} />}
         </div>))}
 

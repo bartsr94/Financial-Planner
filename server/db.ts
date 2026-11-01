@@ -117,6 +117,7 @@ const DEFAULTS: Record<string, string> = {
   loanYears: '30',
   loanStart: '',
   loanExtraMonthly: '0',
+  loanCurrency: 'PLN',
 };
 const seed = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(DEFAULTS)) seed.run(k, v);

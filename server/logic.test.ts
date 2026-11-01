@@ -50,10 +50,12 @@ test('mortgage matches the Amortization sheet (200k price, 20k down, 3.5%, 30y)'
   close(extra.rows.at(-1)!.balanceEnd, 0);
 });
 
-test('payments made counts whole months only', () => {
+test('payments made counts the first payment date and each monthly date since', () => {
   assert.equal(paymentsMade('2026-01-15', '2026-01-14'), 0);
-  assert.equal(paymentsMade('2026-01-15', '2026-02-14'), 0);
-  assert.equal(paymentsMade('2026-01-15', '2026-02-15'), 1);
+  assert.equal(paymentsMade('2026-01-15', '2026-01-15'), 1);
+  assert.equal(paymentsMade('2026-01-15', '2026-02-14'), 1);
+  assert.equal(paymentsMade('2026-01-15', '2026-02-15'), 2);
+  assert.equal(paymentsMade('2025-05-28', '2026-11-01'), 18);
   assert.equal(paymentsMade('2030-01-01', '2026-01-01'), 0);
 });
 
@@ -169,5 +171,21 @@ test('mBank loan history CSV', () => {
     ['2025-04-24', 'drawdown', 200000, 200000],
     ['2025-05-28', 'interest', 2326.9, null],
     ['2025-05-29', 'principal', 2100, 197055.31],
+  ]);
+});
+
+test('Pekao loan CSV splits each payment by the fall in capital owed', () => {
+  const csv = [
+    'Data księgowania;Typ operacji;Wartość;Kapitał do spłaty',
+    '28.07.2025;LOAN PAYMENT - AUTO DEBIT;790,12 EUR;98 802,13',
+    '30.06.2025;LOAN PAYMENT - AUTO DEBIT;790,12 EUR;99 027,68',
+    '08.05.2025;LOAN ADVANCE;-99 556,35 EUR;99 556,35',
+  ].join('\r\n');
+  assert.deepEqual(parseLoanHistory(csv).map((e) => [e.date, e.kind, e.amount, e.balanceAfter]), [
+    ['2025-05-08', 'drawdown', 99556.35, 99556.35],
+    ['2025-06-30', 'principal', 528.67, 99027.68],
+    ['2025-06-30', 'interest', 261.45, null],
+    ['2025-07-28', 'principal', 225.55, 98802.13],
+    ['2025-07-28', 'interest', 564.57, null],
   ]);
 });
