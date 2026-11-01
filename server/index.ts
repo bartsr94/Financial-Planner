@@ -299,27 +299,27 @@ app.get('/api/mortgage', (_req, res) => {
 app.get('/api/summary', (_req, res) => {
   const s = getSettings();
   const today = todayISO();
-  const accts = all("SELECT * FROM accounts WHERE archived = 0 AND owner = 'personal'") as (Row & { kind: string; balance: number })[];
+  const accts = all('SELECT * FROM accounts WHERE archived = 0') as (Row & { kind: string; balance: number })[];
   const sum = (kind: string) => accts.filter((a) => a.kind === kind).reduce((t, a) => t + Number(a.balance), 0);
   const cash = sum('cash'), investments = sum('investment'), assets = sum('asset'), debt = sum('debt');
   const netWorth = cash + investments + assets + debt;
   const business = all("SELECT SUM(balance) AS b FROM accounts WHERE archived = 0 AND owner = 'business' AND kind = 'cash'")[0]?.b ?? 0;
 
-  // last 6 full months + this month of personal income / expenses (transfers excluded)
+  // last 6 full months + this month of income / expenses, all accounts (transfers excluded)
   const from = addMonths(today.slice(0, 7) + '-01', -6);
   const months = all(
     `SELECT substr(t.date, 1, 7) AS month,
             SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
             SUM(CASE WHEN t.amount < 0 THEN -t.amount ELSE 0 END) AS expenses
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE a.owner = 'personal' AND a.archived = 0 AND t.date >= ? AND COALESCE(t.category, '') <> 'Transfer'
+     WHERE a.archived = 0 AND t.date >= ? AND COALESCE(t.category, '') <> 'Transfer'
      GROUP BY month ORDER BY month`, from,
   );
   const thisMonth = today.slice(0, 7);
   const byCategory = all(
     `SELECT COALESCE(t.category, 'Uncategorised') AS category, SUM(-t.amount) AS spent
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE a.owner = 'personal' AND a.archived = 0 AND t.amount < 0 AND substr(t.date, 1, 7) = ?
+     WHERE a.archived = 0 AND t.amount < 0 AND substr(t.date, 1, 7) = ?
        AND COALESCE(t.category, '') <> 'Transfer'
      GROUP BY category ORDER BY spent DESC`, thisMonth,
   );
@@ -354,13 +354,11 @@ app.get('/api/summary', (_req, res) => {
 });
 
 // Month-by-month income and spending for the dashboard charts. `months` = how many months back (0 = all history).
-// `owner` = personal | business | all; auto (the default) is personal, or all while there are no personal transactions yet.
+// `owner` = personal | business | all (the default).
 app.get('/api/trends', (req, res) => {
   const thisMonth = todayISO().slice(0, 7);
-  let owner = str(req.query.owner, 'auto');
-  if (!['personal', 'business', 'all'].includes(owner)) {
-    owner = one("SELECT 1 FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE a.owner = 'personal' AND a.archived = 0 LIMIT 1") ? 'personal' : 'all';
-  }
+  const asked = str(req.query.owner, 'all');
+  const owner = ['personal', 'business'].includes(asked) ? asked : 'all';
   const rows = (all(
     `SELECT substr(t.date, 1, 7) AS month, COALESCE(t.category, 'Uncategorised') AS category,
             SUM(CASE WHEN t.amount > 0 THEN t.amount ELSE 0 END) AS income,
@@ -383,7 +381,7 @@ app.get('/api/trends', (req, res) => {
 app.get('/api/networth-history', (_req, res) => {
   res.json(all(
     `SELECT s.month, SUM(s.balance) AS netWorth FROM balance_snapshots s
-     JOIN accounts a ON a.id = s.account_id WHERE a.owner = 'personal' AND a.archived = 0
+     JOIN accounts a ON a.id = s.account_id WHERE a.archived = 0
      GROUP BY s.month ORDER BY s.month`,
   ));
 });

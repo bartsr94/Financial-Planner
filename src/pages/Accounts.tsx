@@ -27,7 +27,7 @@ export function Accounts() {
   if (error) return <p className="error">{error}</p>;
   if (!accounts) return <p className="muted">Loading…</p>;
 
-  const groups: ['personal' | 'business', string][] = [['personal', 'Personal'], ['business', 'Business (kept out of net worth)']];
+  const groups: ['personal' | 'business', string][] = [['personal', 'Personal'], ['business', 'Business']];
 
   return (
     <>

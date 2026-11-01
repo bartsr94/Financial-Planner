@@ -27,7 +27,7 @@ const OWNERS = [['personal', 'Personal'], ['business', 'Business'], ['all', 'Bot
 export function Dashboard() {
   const { data: s, error } = useGet<Summary>('/summary');
   const [range, setRange] = useState(() => localStorage.getItem('range') ?? '12');
-  const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'auto');
+  const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'all');
   const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
   const { data: nw } = useGet<{ month: string; netWorth: number }[]>('/networth-history');
   const [selected, setSelected] = useState<string | null>(null);
@@ -71,7 +71,7 @@ export function Dashboard() {
         <div>
           <h1>Overview</h1>
           <div className="sub">{cur ? <>Showing <b>{monthLabel(cur.month, true)}</b>. Click a month in a chart to change it.</> : 'Your money at a glance.'}
-            {t.owner !== 'personal' && <> Charts include the business account.</>}</div>
+            {t.owner !== 'all' && <> Charts show {t.owner} accounts only.</>}</div>
         </div>
         <div className="filters">
           <div className="segmented" role="group" aria-label="Whose money">
@@ -94,7 +94,7 @@ export function Dashboard() {
           <h2>Net worth</h2>
           <div className="kpi-row"><div className="big">{fmtMoney(s.netWorth)}</div><Sparkline values={(nw ?? []).map((p) => p.netWorth)} /></div>
           <div className="sub">Cash {fmtMoney(s.cash)} · Investments {fmtMoney(s.investments)}{s.debt ? ` · Debt ${fmtMoney(s.debt)}` : ''}</div>
-          {s.businessCash !== 0 && <div className="sub">Business cash {fmtMoney(s.businessCash)}, kept out of this</div>}
+          {s.businessCash !== 0 && <div className="sub">Includes {fmtMoney(s.businessCash)} in the business account</div>}
         </div>
         <Kpi title="Income" value={cur?.income} before={prev?.income} goodWhenUp />
         <Kpi title="Spending" value={cur?.expenses} before={prev?.expenses} goodWhenUp={false} />

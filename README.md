@@ -24,7 +24,8 @@ For development, `npm run dev` runs the API (port 3001) and Vite (hot reload) to
 - **Bills**: due dates, repeats (weekly to yearly), mark paid, 60-day calendar. A bill can carry a
   match text (for example `TAURON`); an imported payment containing it marks the bill paid.
 - **Transactions**: filter, recategorise, make a rule from a correction.
-- **Accounts**: personal and business. Business accounts are kept out of net worth, spending and FI.
+- **Accounts**: personal and business. Every account counts towards net worth, spending and FI;
+  the business label only lets the dashboard charts show one side on its own.
 - **Import**: bank CSV statements (mBank, Pekao and others). Handles Polish amounts and dates,
   windows-1250 encoding, preamble lines and `#` headers. Re-importing the same period is safe.
 - **Mortgage**: fixed-rate amortisation with an optional extra monthly payment.
