@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
   dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
-  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine,
 } from './logic.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
+import { merchantKey } from '../shared/merchant.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
 
@@ -188,4 +189,33 @@ test('Pekao loan CSV splits each payment by the fall in capital owed', () => {
     ['2025-07-28', 'principal', 225.55, 98802.13],
     ['2025-07-28', 'interest', 564.57, null],
   ]);
+});
+
+test('own transfers: the bank marker, and same-currency pairs across accounts', () => {
+  const l = (id: number, accountId: number, date: string, amount: number, description = 'X', currency = 'PLN'): TransferLine => ({ id, accountId, date, amount, currency, description });
+  const ids = findTransfers([
+    l(1, 1, '2026-05-01', -500, 'JAN KOWALSKI, OSZCZĘDNOŚCI PRZELEW WŁASNY 12345678'),
+    l(2, 1, '2026-05-02', -1200), l(3, 2, '2026-05-04', 1200), // a pair two days apart
+    l(4, 1, '2026-05-02', -300), l(5, 1, '2026-05-02', 300),   // same account: a refund, not a transfer
+    l(6, 1, '2026-05-10', -900), l(7, 2, '2026-05-20', 900),   // too far apart
+    l(8, 1, '2026-05-10', -900, 'X', 'PLN'), l(9, 3, '2026-05-10', 900, 'Y', 'EUR'), // different currency
+    l(10, 1, '2026-06-01', -3777, 'URZĄD SKARBOWY, VAT-7'), l(11, 2, '2026-06-01', 3777), // tax never pairs
+  ]);
+  assert.deepEqual(ids.sort((a, b) => a - b), [1, 2, 3]);
+});
+
+test('an incoming line pairs once, with the nearest outgoing line', () => {
+  const l = (id: number, accountId: number, date: string, amount: number): TransferLine => ({ id, accountId, date, amount, currency: 'PLN', description: 'X' });
+  assert.deepEqual(findTransfers([l(1, 1, '2026-05-01', -100), l(2, 1, '2026-05-03', -100), l(3, 2, '2026-05-03', 100)]).sort(), [1, 3]);
+});
+
+test('merchant key drops the bank boilerplate and stays a leading piece of the description', () => {
+  assert.equal(merchantKey('ZIKO APTEKA KRAKOW ZAKUP PRZY UŻYCIU KARTY W KRAJU'), 'ZIKO APTEKA KRAKOW');
+  assert.equal(merchantKey('LIDL KRAKOW · *********0090658'), 'LIDL KRAKOW');
+  assert.equal(merchantKey('WALDEMAR WNĘK, CZYNSZ 61114020040000'), 'WALDEMAR WNĘK, CZYNSZ');
+  assert.equal(merchantKey('Netflix'), 'Netflix');
+});
+
+test('a long merchant key ends at a whole word', () => {
+  assert.equal(merchantKey('BARTOSZ RZĄSA, TRANSFER UL.DIETLA 80 M.40 31-073 KRAKÓW'), 'BARTOSZ RZĄSA, TRANSFER UL.DIETLA 80');
 });

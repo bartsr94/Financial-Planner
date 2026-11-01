@@ -5,8 +5,9 @@ import { db, getSettings, CATEGORIES } from './db.ts';
 import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
   todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
-  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine,
 } from './logic.ts';
+import { merchantKey } from '../shared/merchant.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
 import { ensureRates, missingRates, rateSql } from './fx.ts';
 import { CURRENCIES } from '../shared/parse.ts';
@@ -161,7 +162,49 @@ app.post('/api/rules', (req, res) => {
   run('INSERT INTO category_rules (pattern, category) VALUES (?, ?)', pattern, category);
   res.json({ categorised: applyRules() });
 });
-app.post('/api/rules/apply', (_req, res) => res.json({ categorised: applyRules() }));
+app.post('/api/rules/apply', (_req, res) => res.json({ categorised: applyRules(), transfers: markTransfers() }));
+
+/** File uncategorised moves between own accounts as Transfer, so they count as neither income nor spending. */
+function markTransfers(): number {
+  const lines = all(
+    `SELECT t.id, t.account_id AS accountId, t.date, t.amount, a.currency, t.description
+     FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t.category IS NULL`,
+  ) as unknown as TransferLine[];
+  const ids = findTransfers(lines);
+  db.exec('BEGIN');
+  try {
+    for (const id of ids) run("UPDATE transactions SET category = 'Transfer' WHERE id = ? AND category IS NULL", id);
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return ids.length;
+}
+
+// The uncategorised lines grouped by merchant, biggest first, so one rule can file a whole group.
+app.get('/api/review', async (_req, res) => {
+  await ensureRates();
+  const rows = all(
+    `SELECT t.id, t.date, t.description, a.name AS account, ${plnSql('t.amount', 't.date')} AS pln
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE t.category IS NULL AND a.archived = 0 ORDER BY t.date DESC`,
+  ) as (Row & { id: number; date: string; description: string; account: string; pln: number | null })[];
+  const groups = new Map<string, { key: string; count: number; spent: number; received: number; accounts: Set<string>; first: string; last: string; example: string }>();
+  for (const r of rows) {
+    const key = merchantKey(r.description) || r.description;
+    const g = groups.get(normText(key)) ?? { key, count: 0, spent: 0, received: 0, accounts: new Set<string>(), first: r.date, last: r.date, example: r.description };
+    g.count++;
+    if ((r.pln ?? 0) < 0) g.spent -= r.pln ?? 0; else g.received += r.pln ?? 0;
+    g.accounts.add(r.account);
+    if (r.date < g.first) g.first = r.date;
+    if (r.date > g.last) g.last = r.date;
+    groups.set(normText(key), g);
+  }
+  const sorted = [...groups.values()].sort((a, b) => (b.spent + b.received) - (a.spent + a.received));
+  res.json({
+    lines: rows.length,
+    groupCount: sorted.length,
+    groups: sorted.slice(0, 100).map((g) => ({ ...g, accounts: [...g.accounts] })),
+  });
+});
 app.delete('/api/rules/:id', (req, res) => { run('DELETE FROM category_rules WHERE id = ?', Number(req.params.id)); res.json({ ok: true }); });
 
 // ------------------------------------------------------------------ bills
@@ -295,7 +338,9 @@ app.post('/api/import', (req, res) => {
     db.exec('ROLLBACK');
     return res.status(500).json({ error: String(e) });
   }
-  res.json({ added, duplicates, billsPaid, otherCurrency });
+  // the other side of a transfer may already be in from another account's statement
+  const transfers = markTransfers();
+  res.json({ added, duplicates, billsPaid, otherCurrency, transfers });
 });
 
 // ------------------------------------------------------------------ settings, mortgage, summary

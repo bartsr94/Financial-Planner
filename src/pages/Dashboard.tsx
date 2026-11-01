@@ -36,10 +36,15 @@ export function Dashboard() {
   const [selected, setSelected] = useState<string | null>(null);
   const [nwView, setNwView] = useState(() => localStorage.getItem('nwView') ?? 'net');
 
-  // default to the latest month that has transactions, not a still-empty current month
+  // default to the last complete month: the current one is only partly in, and reads as a sudden drop
+  const today = new Date();
+  const thisMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
   useEffect(() => {
-    if (t && (!selected || !t.months.some((m) => m.month === selected))) setSelected(t.latestWithData ?? t.months.at(-1)?.month ?? null);
+    if (!t || (selected && t.months.some((m) => m.month === selected))) return;
+    const complete = t.months.filter((m) => m.month < thisMonth && (!t.latestWithData || m.month <= t.latestWithData)).at(-1)?.month;
+    setSelected(complete ?? t.latestWithData ?? t.months.at(-1)?.month ?? null);
   }, [t]); // eslint-disable-line react-hooks/exhaustive-deps
+  const soFar = (month: string) => (month === thisMonth ? ' so far' : '');
 
   const sel = t?.months.findIndex((m) => m.month === selected) ?? -1;
   const cur = t && sel >= 0 ? t.months[sel] : undefined;
@@ -86,7 +91,7 @@ export function Dashboard() {
       <div className="page-head">
         <div>
           <h1>Overview</h1>
-          <div className="sub">{cur ? <>Showing <b>{monthLabel(cur.month, true)}</b>. Click a month in a chart to change it.</> : 'Your money at a glance.'}
+          <div className="sub">{cur ? <>Showing <b>{monthLabel(cur.month, true)}{soFar(cur.month)}</b>. Click a month in a chart to change it.</> : 'Your money at a glance.'}
             {t.owner !== 'all' && <> Charts show {t.owner} accounts only.</>}</div>
         </div>
         <div className="filters">
@@ -190,7 +195,7 @@ export function Dashboard() {
 
       <div className="cols-3">
         <div className="card">
-          <h2>Spending in {cur ? monthLabel(cur.month, true) : '…'}</h2>
+          <h2>Spending in {cur ? monthLabel(cur.month, true) + soFar(cur.month) : '…'}</h2>
           {breakdown.length === 0 ? <div className="muted">No spending recorded in this month.</div> : (
             <table className="cat-table"><tbody>
               {breakdown.slice(0, 10).map((b) => {

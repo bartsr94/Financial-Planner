@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, fmtDate, fmtMoneyIn, type Account, type Tx } from '../api.ts';
 import { useGet } from '../hooks.ts';
+import { merchantKey as merchantOf } from '../../shared/merchant.ts';
 
 export function Transactions() {
   const [account, setAccount] = useState('');
@@ -116,10 +117,6 @@ export function Transactions() {
 }
 
 const PAGE_SIZE = 100;
-
-// Suggest the merchant, not the bank's boilerplate ("ZAKUP PRZY UŻYCIU KARTY…", "BLIK…", "PRZELEW…").
-const merchantOf = (d: string) =>
-  d.replace(/\s+/g, ' ').split(/ (?:ZAKUP PRZY|ZWROT|BLIK|PRZELEW|WYPŁATA GOTÓWKI|PP\/)/i)[0].trim().slice(0, 40);
 
 function RuleBox({ tx, onSave, onCancel }: { tx: Tx; onSave: (p: string) => void; onCancel: () => void }) {
   const [pattern, setPattern] = useState(merchantOf(tx.description));

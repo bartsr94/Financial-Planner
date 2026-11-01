@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Dashboard } from './pages/Dashboard.tsx';
 import { Bills } from './pages/Bills.tsx';
 import { Transactions } from './pages/Transactions.tsx';
+import { Review } from './pages/Review.tsx';
 import { Accounts } from './pages/Accounts.tsx';
 import { ImportPage } from './pages/ImportPage.tsx';
 import { Loans } from './pages/Loans.tsx';
@@ -13,6 +14,7 @@ const TABS = {
   Dashboard: { page: Dashboard, icon: icon(<><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></>) },
   Bills: { page: Bills, icon: icon(<><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 10h18M8 3v4M16 3v4" /></>) },
   Transactions: { page: Transactions, icon: icon(<path d="M4 7h13l-3-3M20 17H7l3 3" />) },
+  Review: { page: Review, icon: icon(<><path d="M4 6h16M4 12h10M4 18h7" /><path d="M15 17l2 2 4-4" /></>) },
   Accounts: { page: Accounts, icon: icon(<><path d="M3 10l9-6 9 6" /><path d="M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 21h18" /></>) },
   Import: { page: ImportPage, icon: icon(<><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>) },
   Loans: { page: Loans, icon: icon(<><path d="M3 11l9-7 9 7" /><path d="M5 10v10h14V10" /><path d="M10 20v-6h4v6" /></>) },

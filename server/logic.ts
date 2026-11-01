@@ -298,3 +298,36 @@ export function loanTotals(lines: LoanLine[], today: string) {
     owed, firstDate: lines.map((l) => l.date).sort()[0] ?? null, lastDate: lines.map((l) => l.date).sort().at(-1) ?? null,
   };
 }
+
+export interface TransferLine { id: number; accountId: number; date: string; amount: number; currency: string; description: string }
+
+// mBank marks a transfer between the holder's own accounts "PRZELEW WŁASNY"
+const OWN_TRANSFER = /przelew w[łl]asny/i;
+// tax and social-security payments go to an outside account even when an amount happens to match
+const NEVER_TRANSFER = /urz[ąa]d skarbowy|\bvat\b|\bzus\b|\bpit\b/i;
+
+/**
+ * Lines that move money between the owner's own accounts: those the bank marks as an own transfer,
+ * and pairs of an outgoing and incoming line of exactly the same amount and currency on two
+ * different accounts within `days` days. Each line pairs once, with the nearest date. Lines in
+ * different currencies are never paired: the rate the bank used is unknown, so a match would be a guess.
+ */
+export function findTransfers(lines: TransferLine[], days = 3): number[] {
+  const found = new Set<number>();
+  for (const l of lines) if (OWN_TRANSFER.test(l.description) && !NEVER_TRANSFER.test(l.description)) found.add(l.id);
+  const open = lines.filter((l) => !NEVER_TRANSFER.test(l.description));
+  const incoming = open.filter((l) => l.amount > 0).sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id);
+  const used = new Set<number>();
+  for (const out of open.filter((l) => l.amount < 0).sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id)) {
+    let best: TransferLine | undefined;
+    let bestGap = Infinity;
+    for (const inc of incoming) {
+      if (used.has(inc.id) || inc.accountId === out.accountId || inc.currency !== out.currency) continue;
+      if (Math.abs(inc.amount + out.amount) > 0.005) continue;
+      const gap = Math.abs(daysBetween(out.date, inc.date));
+      if (gap <= days && gap < bestGap) { best = inc; bestGap = gap; }
+    }
+    if (best) { used.add(best.id); found.add(best.id); found.add(out.id); }
+  }
+  return [...found];
+}
