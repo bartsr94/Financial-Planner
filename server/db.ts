@@ -94,6 +94,11 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- recurring payments the user said are not bills, so they are not suggested again
+CREATE TABLE IF NOT EXISTS dismissed_recurring (
+  key TEXT PRIMARY KEY
+);
 `);
 
 // Migration: remember the day of month a bill is really due on, so a 31st bill survives short months.

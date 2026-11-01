@@ -6,6 +6,7 @@ import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
   todayISO, addDays, addMonths, txHash, matchRule, monthlyTrends, type TrendRow, normText, type Frequency, type LoanInputs,
   balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine,
+  findRecurring, type RecurringLine, forecastCash,
 } from './logic.ts';
 import { merchantKey } from '../shared/merchant.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
@@ -285,6 +286,33 @@ app.get('/api/bills/calendar', (req, res) => {
   res.json(out);
 });
 
+// Payments that look like bills: the same merchant and amount on a steady schedule, not yet a bill or dismissed.
+app.get('/api/bills/suggestions', async (_req, res) => {
+  await ensureRates();
+  const today = todayISO();
+  const rows = all(
+    `SELECT t.date, t.description, t.category, ${plnSql('t.amount', 't.date')} AS pln
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE a.archived = 0 AND t.amount < 0 AND t.date >= ? AND COALESCE(t.category, '') <> 'Transfer'`,
+    addMonths(today, -18),
+  ) as (Row & { date: string; description: string; category: string | null; pln: number | null })[];
+  const lines: RecurringLine[] = rows
+    .filter((r) => r.pln !== null)
+    .map((r) => ({ key: merchantKey(r.description) || r.description, date: r.date, amount: Number(r.pln), category: r.category }));
+  const patterns = (all('SELECT match_pattern FROM bills WHERE active = 1 AND match_pattern IS NOT NULL') as { match_pattern: string }[])
+    .map((b) => normText(b.match_pattern));
+  const dismissed = new Set((all('SELECT key FROM dismissed_recurring') as { key: string }[]).map((d) => d.key));
+  res.json(findRecurring(lines, today).filter((r) =>
+    !dismissed.has(normText(r.key)) && !patterns.some((p) => normText(r.key).includes(p) || p.includes(normText(r.key)))));
+});
+
+app.post('/api/bills/suggestions/dismiss', (req, res) => {
+  const key = str(req.body?.key).trim();
+  if (!key) return bad(res, 'key required');
+  run('INSERT OR IGNORE INTO dismissed_recurring (key) VALUES (?)', normText(key));
+  res.json({ ok: true });
+});
+
 // ------------------------------------------------------------------ statement import
 interface ImportRow { date: string; amount: number; description: string; currency?: string | null }
 
@@ -314,7 +342,9 @@ app.post('/api/import', (req, res) => {
 
       const lower = normText(description);
       let category = matchRule(rules, description)?.category ?? null;
-      const bill = r.amount < 0 ? bills.find((b) => lower.includes(normText(String(b.match_pattern)))) : undefined;
+      // a fixed bill only matches a payment near its amount, so a merchant's other payments don't settle it
+      const near = (b: BillRow) => !b.amount_varies || !b.amount || Math.abs(Math.abs(r.amount) - b.amount) <= b.amount * 0.3;
+      const bill = r.amount < 0 ? bills.find((b) => lower.includes(normText(String(b.match_pattern))) && near(b)) : undefined;
       if (bill && !category) category = bill.category;
 
       const ins = run(
@@ -438,6 +468,41 @@ app.get('/api/summary', async (_req, res) => {
       overdueTotal: overdue.reduce((t, u) => t + u.amount, 0),
       next: upcoming.slice(0, 8).map((u) => ({ ...u, status: billStatus(u.date, today) })),
     },
+  });
+});
+
+// Cash over the next months at the median income and spending of the last 6 completed months, with the bills due
+// in each month for reference (already inside the spending median, so not taken off again).
+app.get('/api/forecast', async (req, res) => {
+  await ensureRates();
+  const today = todayISO();
+  const thisMonth = today.slice(0, 7);
+  const ahead = Math.min(12, Math.max(1, Math.round(num(Number(req.query.months), 6))));
+  const asked = str(req.query.owner, 'all');
+  const owner = ['personal', 'business'].includes(asked) ? asked : 'all';
+  const ownerSql = owner === 'all' ? '' : 'AND a.owner = ?';
+  const ownerArg = owner === 'all' ? [] : [owner];
+  const cash = all(`SELECT ${plnSql('a.balance', TODAY_SQL)} AS pln FROM accounts a WHERE a.archived = 0 AND a.kind = 'cash' ${ownerSql}`, ...ownerArg)
+    .reduce((t, a) => t + Number(a.pln ?? 0), 0);
+  const history = all(
+    `SELECT substr(t.date, 1, 7) AS month,
+            SUM(CASE WHEN t.amount > 0 THEN ${plnSql('t.amount', 't.date')} ELSE 0 END) AS income,
+            SUM(CASE WHEN t.amount < 0 THEN -${plnSql('t.amount', 't.date')} ELSE 0 END) AS expenses
+     FROM transactions t JOIN accounts a ON a.id = t.account_id
+     WHERE a.archived = 0 AND t.date >= ? AND t.date < ? AND COALESCE(t.category, '') <> 'Transfer' ${ownerSql}
+     GROUP BY month ORDER BY month`, addMonths(`${thisMonth}-01`, -6), `${thisMonth}-01`, ...ownerArg,
+  ) as (Row & { month: string; income: number; expenses: number })[];
+  const f = forecastCash(cash, history.map((h) => ({ income: Number(h.income), expenses: Number(h.expenses) })), today, ahead);
+
+  const bills = all('SELECT * FROM bills WHERE active = 1') as BillRow[];
+  const to = monthEnd(f.months.at(-1)!.month);
+  const due = bills.flatMap((b) => occurrencesBetween(b.next_due, b.frequency, today, to, b.anchor_day ?? undefined).map((date) => ({ name: b.name, amount: b.amount, date })));
+  res.json({
+    owner, today, cash, basis: history.map((h) => h.month), income: f.income, spending: f.spending,
+    months: f.months.map((m) => {
+      const inMonth = due.filter((d) => d.date.startsWith(m.month)).sort((a, b) => a.date.localeCompare(b.date));
+      return { ...m, bills: inMonth.reduce((t, d) => t + d.amount, 0), billCount: inMonth.length };
+    }),
   });
 });
 

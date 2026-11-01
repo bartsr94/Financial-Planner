@@ -5,8 +5,11 @@ import { useGet } from '../hooks.ts';
 interface Meta { categories: string[]; today: string }
 interface CalItem { billId: number; name: string; amount: number; date: string }
 interface Payment { id: number; name: string; due_date: string; paid_date: string; amount: number }
+interface Suggestion { key: string; frequency: string; amount: number; amountVaries: boolean; nextDue: string; last: string; count: number; category: string | null; monthly: number }
 
 const FREQ = ['weekly', 'monthly', 'quarterly', 'yearly', 'once'];
+// "ORANGE DOLADOWANIA.ORANGE.PL" → "Orange Doladowania.orange.pl", a starting name the user can edit
+const titleCase = (s: string) => s.toLowerCase().replace(/(^|[\s/(-])(\p{L})/gu, (_, a: string, b: string) => a + b.toUpperCase());
 const blank = (today: string) => ({ name: '', amount: '', amount_varies: false, frequency: 'monthly', next_due: today, category: 'Housing', match_pattern: '', notes: '' });
 
 export function Bills() {
@@ -14,10 +17,25 @@ export function Bills() {
   const { data: meta } = useGet<Meta>('/meta');
   const { data: cal, reload: reloadCal } = useGet<CalItem[]>('/bills/calendar');
   const { data: paid, reload: reloadPaid } = useGet<Payment[]>('/bills/payments');
+  const { data: suggested, reload: reloadSuggested } = useGet<Suggestion[]>('/bills/suggestions');
   const [form, setForm] = useState<ReturnType<typeof blank> & { id?: number } | null>(null);
   const [msg, setMsg] = useState('');
 
-  const refresh = () => { reload(); reloadCal(); reloadPaid(); };
+  const refresh = () => { reload(); reloadCal(); reloadPaid(); reloadSuggested(); };
+
+  function adopt(r: Suggestion) {
+    setMsg('');
+    setForm({
+      name: titleCase(r.key), amount: String(r.amount), amount_varies: r.amountVaries, frequency: r.frequency,
+      next_due: r.nextDue, category: r.category ?? 'Misc', match_pattern: r.key, notes: '',
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function dismiss(r: Suggestion) {
+    await api('/bills/suggestions/dismiss', 'POST', { key: r.key });
+    reloadSuggested();
+  }
   const set = (patch: Partial<NonNullable<typeof form>>) => setForm((f) => (f ? { ...f, ...patch } : f));
 
   async function save() {
@@ -96,6 +114,31 @@ export function Bills() {
             </tbody>
           </table>)}
       </div>
+
+      {suggested && suggested.length > 0 && (
+        <div className="card scroll" style={{ marginBottom: 12 }}>
+          <div className="card-head">
+            <h2>Looks recurring</h2>
+            <span className="sub">The same payee and amount on a steady schedule, found in your statements</span>
+          </div>
+          <table>
+            <thead><tr><th>Payee</th><th>Repeats</th><th>Last paid</th><th>Next expected</th><th className="num">Amount</th><th /></tr></thead>
+            <tbody>
+              {suggested.map((r) => (
+                <tr key={`${r.key}|${r.amount}`}>
+                  <td className="tx-desc">{r.key}<div className="sub">{r.count} payments{r.category ? ` · ${r.category}` : ''}</div></td>
+                  <td>{r.frequency}</td>
+                  <td className="nowrap">{fmtDate(r.last)}</td>
+                  <td className="nowrap">{fmtDate(r.nextDue)}</td>
+                  <td className="num">{r.amountVaries ? '≈ ' : ''}{fmtMoneyExact(r.amount)}</td>
+                  <td className="num" style={{ whiteSpace: 'nowrap' }}>
+                    <button className="btn small primary" onClick={() => adopt(r)}>Add as bill</button>{' '}
+                    <button className="btn small" onClick={() => dismiss(r)}>Not a bill</button>
+                  </td>
+                </tr>))}
+            </tbody>
+          </table>
+        </div>)}
 
       <div className="grid">
         <div className="card"><h2>Next 60 days</h2>

@@ -149,10 +149,11 @@ export function BarChart({ months, series, stacked, height = 240, format, select
   );
 }
 
-export function Legend({ items }: { items: { label: string; color: string }[] }) {
+export function Legend({ items }: { items: { label: string; color: string; dashed?: boolean }[] }) {
   return (
     <div className="legend">
-      {items.map((i) => <span key={i.label}><span className="swatch" style={{ background: i.color }} />{i.label}</span>)}
+      {items.map((i) => <span key={i.label}>
+        <span className={i.dashed ? 'swatch dashed' : 'swatch'} style={i.dashed ? { borderColor: i.color } : { background: i.color }} />{i.label}</span>)}
     </div>
   );
 }
@@ -171,7 +172,7 @@ export function Sparkline({ values, color = 'var(--series-1)' }: { values: numbe
 }
 
 /** One line: values per month, null where nothing is known yet (the line starts at its first value). */
-export interface LineSeries { key: string; label: string; color: string; values: (number | null)[] }
+export interface LineSeries { key: string; label: string; color: string; values: (number | null)[]; dashed?: boolean }
 
 interface LineChartProps {
   months: string[];
@@ -230,7 +231,8 @@ export function LineChart({ months, series, height = 260, format, zeroBased = tr
           {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={pad.t} y2={pad.t + plotH} className="crosshair" />}
           {series.map((s) => {
             const pts = s.values.map((v, i) => (v === null ? null : `${x(i)},${y(v)}`)).filter(Boolean);
-            return <polyline key={s.key} points={pts.join(' ')} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />;
+            return <polyline key={s.key} points={pts.join(' ')} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round"
+              strokeDasharray={s.dashed ? '5 5' : undefined} />;
           })}
           {hover === null && series.map((s) => s.values.at(-1) != null && (
             <circle key={s.key} cx={x(n - 1)} cy={y(s.values.at(-1)!)} r={4} fill={s.color} stroke="var(--card)" strokeWidth={2} />
@@ -244,7 +246,7 @@ export function LineChart({ months, series, height = 260, format, zeroBased = tr
       {hover !== null && (
         <div className="tooltip" style={{ left: tipLeft, transform: tipLeft > width * 0.6 ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)' }}>
           <div className="tt-title">{monthLabel(months[hover], true)}</div>
-          {series.map((s) => (
+          {series.filter((s) => s.values[hover] !== null || series.length === 1).map((s) => (
             <div className="tt-row" key={s.key}>
               <span className="swatch" style={{ background: s.color }} />
               <span>{s.label}</span><b>{s.values[hover] === null ? '–' : format(s.values[hover]!)}</b>

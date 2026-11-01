@@ -331,3 +331,90 @@ export function findTransfers(lines: TransferLine[], days = 3): number[] {
   }
   return [...found];
 }
+
+export interface RecurringLine { key: string; date: string; amount: number; category: string | null }
+export interface Recurring {
+  key: string; frequency: Exclude<Frequency, 'once'>; amount: number; amountVaries: boolean;
+  nextDue: string; last: string; count: number; category: string | null; monthly: number;
+}
+
+// how far apart payments of each frequency fall, in days
+const PERIODS: { frequency: Exclude<Frequency, 'once'>; lo: number; hi: number; perMonth: number }[] = [
+  { frequency: 'weekly', lo: 6, hi: 8, perMonth: 52 / 12 },
+  { frequency: 'monthly', lo: 25, hi: 36, perMonth: 1 },
+  { frequency: 'quarterly', lo: 84, hi: 98, perMonth: 1 / 3 },
+  { frequency: 'yearly', lo: 350, hi: 380, perMonth: 1 / 12 },
+];
+const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+/**
+ * Payments that repeat on a schedule: at least three to one merchant (`key`) of a similar amount,
+ * three in four spaced like one frequency, and the latest recent enough that the next is not long
+ * overdue. Payments to a merchant on the same day count as one. A merchant paid two different
+ * amounts (a subscription, and taxes paid through the same service) is checked once per amount.
+ * Amounts are outgoing (negative).
+ */
+export function findRecurring(lines: RecurringLine[], today: string): Recurring[] {
+  const groups = new Map<string, RecurringLine[]>();
+  for (const l of lines) if (l.amount < 0) groups.set(l.key, [...(groups.get(l.key) ?? []), l]);
+  const out: Recurring[] = [];
+  for (const [key, ls] of groups) {
+    const byDay = new Map<string, number>();
+    for (const l of ls) byDay.set(l.date, (byDay.get(l.date) ?? 0) - l.amount);
+    // payments within 30% of each other's amount form one stream
+    const streams: { date: string; amount: number }[][] = [];
+    for (const [date, amount] of [...byDay].sort((a, b) => a[1] - b[1])) {
+      const s = streams.find((st) => Math.abs(amount - median(st.map((p) => p.amount))) <= amount * 0.3);
+      if (s) s.push({ date, amount }); else streams.push([{ date, amount }]);
+    }
+    for (const stream of streams) {
+      const r = scheduleOf(key, stream.sort((a, b) => a.date.localeCompare(b.date)), today);
+      if (r) out.push({ ...r, category: ls.filter((l) => l.category).sort((a, b) => b.date.localeCompare(a.date))[0]?.category ?? null });
+    }
+  }
+  return out.sort((a, b) => b.monthly - a.monthly);
+}
+
+function scheduleOf(key: string, pays: { date: string; amount: number }[], today: string): Omit<Recurring, 'category'> | null {
+  if (pays.length < 3) return null;
+  const gaps = pays.slice(1).map((p, i) => daysBetween(pays[i].date, p.date));
+  const period = PERIODS.find((p) => { const g = median(gaps); return g >= p.lo && g <= p.hi; });
+  if (!period) return null;
+  // recent gaps decide: a merchant can change from irregular to a schedule
+  const recent = gaps.slice(-6);
+  if (recent.filter((g) => g >= period.lo && g <= period.hi).length / recent.length < 0.75) return null;
+  const amounts = pays.slice(-6).map((p) => p.amount);
+  const typical = median(amounts);
+  const last = pays.at(-1)!.date;
+  const nextDue = period.frequency === 'weekly' ? addDays(last, 7) : addMonths(last, period.frequency === 'monthly' ? 1 : period.frequency === 'quarterly' ? 3 : 12);
+  // stopped: the next payment is overdue by more than half a period
+  if (daysBetween(nextDue, today) > (period.lo + period.hi) / 4) return null;
+  return {
+    key, frequency: period.frequency, amount: Math.round(typical * 100) / 100,
+    amountVaries: Math.max(...amounts) - Math.min(...amounts) > typical * 0.05,
+    nextDue, last, count: pays.length, monthly: typical * period.perMonth,
+  };
+}
+
+export interface ForecastMonth { month: string; income: number; spending: number; balance: number }
+
+/**
+ * Cash at the end of this month and the next `ahead` months, if income and spending run at their median of the
+ * completed months given. This month counts only the part still to come, by days left.
+ */
+export function forecastCash(start: number, history: { income: number; expenses: number }[], today: string, ahead: number):
+  { income: number; spending: number; months: ForecastMonth[] } {
+  const income = history.length ? median(history.map((h) => h.income)) : 0;
+  const spending = history.length ? median(history.map((h) => h.expenses)) : 0;
+  const first = today.slice(0, 7);
+  const days = Number(monthEnd(first).slice(8, 10));
+  const left = (days - Number(today.slice(8, 10))) / days;
+  const months: ForecastMonth[] = [];
+  let balance = start;
+  for (let i = 0; i <= ahead; i++) {
+    const share = i === 0 ? left : 1;
+    balance += (income - spending) * share;
+    months.push({ month: addMonths(`${first}-01`, i).slice(0, 7), income: income * share, spending: spending * share, balance });
+  }
+  return { income, spending, months };
+}

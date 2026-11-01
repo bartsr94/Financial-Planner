@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
   dateChunks, matchRule, monthlyTrends, occurrencesBetween, parseAmount, parseCurrency, parseDate, paymentsMade, txHash,
-  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine,
+  balanceHistory, loanOwed, loanTotals, monthEnd, monthsBetween, type LoanLine, findTransfers, type TransferLine, findRecurring, type RecurringLine, forecastCash,
 } from './logic.ts';
 import { parseLoanHistory } from '../shared/loan.ts';
 import { merchantKey } from '../shared/merchant.ts';
@@ -218,4 +218,35 @@ test('merchant key drops the bank boilerplate and stays a leading piece of the d
 
 test('a long merchant key ends at a whole word', () => {
   assert.equal(merchantKey('BARTOSZ RZĄSA, TRANSFER UL.DIETLA 80 M.40 31-073 KRAKÓW'), 'BARTOSZ RZĄSA, TRANSFER UL.DIETLA 80');
+});
+
+test('recurring payments: a monthly stream inside a merchant, a stopped one, an irregular one', () => {
+  const l = (key: string, date: string, amount: number, category: string | null = null): RecurringLine => ({ key, date, amount, category });
+  const lines = [
+    // a 392 subscription, with occasional large tax payments through the same service
+    ...['2026-06-01', '2026-07-01', '2026-08-03', '2026-09-01', '2026-10-01'].map((d) => l('INFAKT', d, -392, 'Fees')),
+    l('INFAKT', '2026-06-02', -6022), l('INFAKT', '2026-08-11', -6722),
+    // stopped in June: the next payment is months overdue
+    ...['2026-03-10', '2026-04-10', '2026-05-10', '2026-06-10'].map((d) => l('GYM', d, -150)),
+    // a shop visited at random
+    ...['2026-09-01', '2026-09-03', '2026-09-20', '2026-10-02', '2026-10-30'].map((d) => l('LIDL', d, -80)),
+  ];
+  const r = findRecurring(lines, '2026-11-01');
+  assert.equal(r.length, 1);
+  assert.deepEqual({ key: r[0].key, frequency: r[0].frequency, amount: r[0].amount, nextDue: r[0].nextDue, category: r[0].category, varies: r[0].amountVaries },
+    { key: 'INFAKT', frequency: 'monthly', amount: 392, nextDue: '2026-11-01', category: 'Fees', varies: false });
+});
+
+test('two payments to one merchant on a day count as one', () => {
+  const l = (date: string, amount: number): RecurringLine => ({ key: 'ZUS', date, amount, category: null });
+  const r = findRecurring(['2026-08-15', '2026-09-15', '2026-10-15'].flatMap((d) => [l(d, -400), l(d, -1000)]), '2026-11-01');
+  assert.equal(r[0]?.amount, 1400);
+});
+
+test('cash forecast: median month, and only the rest of this month', () => {
+  const history = [{ income: 10000, expenses: 8000 }, { income: 30000, expenses: 9000 }, { income: 12000, expenses: 7000 }];
+  const f = forecastCash(50000, history, '2026-11-15', 2); // 15 of 30 days left
+  assert.equal(f.income, 12000);
+  assert.equal(f.spending, 8000);
+  assert.deepEqual(f.months.map((m) => [m.month, m.balance]), [['2026-11', 52000], ['2026-12', 56000], ['2027-01', 60000]]);
 });

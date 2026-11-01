@@ -21,6 +21,10 @@ const colorFor = (categories: string[], c: string) => {
   const named = categories.filter((x) => x !== 'Uncategorised' && x !== 'Other');
   return named.includes(c) ? `var(--series-${named.indexOf(c) + 1})` : 'var(--series-other)';
 };
+interface Forecast {
+  owner: string; today: string; cash: number; basis: string[]; income: number; spending: number;
+  months: { month: string; income: number; spending: number; balance: number; bills: number; billCount: number }[];
+}
 interface NetWorthMonth { month: string; cash: number; investments: number; assets: number; debt: number; netWorth: number }
 
 const RANGES = [['6', '6M'], ['12', '12M'], ['24', '2Y'], ['0', 'All']] as const;
@@ -33,6 +37,7 @@ export function Dashboard() {
   const [owner, setOwner] = useState(() => localStorage.getItem('owner') ?? 'all');
   const { data: t } = useGet<Trends>(`/trends?months=${range}&owner=${owner}`);
   const { data: nw } = useGet<NetWorthMonth[]>('/networth-history');
+  const { data: fc } = useGet<Forecast>(`/forecast?months=6&owner=${owner}`);
   const [selected, setSelected] = useState<string | null>(null);
   const [nwView, setNwView] = useState(() => localStorage.getItem('nwView') ?? 'net');
 
@@ -85,6 +90,17 @@ export function Dashboard() {
     ];
   const nwChange = nwShown && nwShown.length > 1 ? nwShown.at(-1)!.netWorth - nwShown[0].netWorth : 0;
   const pickNwView = (v: string) => { setNwView(v); localStorage.setItem('nwView', v); };
+
+  // Cash outlook: the last months of cash (both owners only, as history isn't split by owner), then the projection
+  // from today's balance. Both lines share this month's point, so they join.
+  const pastCash = fc && fc.owner === 'all' && nw ? nw.filter((p) => p.month < thisMonth).slice(-5) : [];
+  const outlookMonths = fc ? [...pastCash.map((p) => p.month), ...fc.months.map((m) => m.month)] : [];
+  const nowAt = pastCash.length;
+  const outlook: LineSeries[] = !fc ? [] : [
+    ...(pastCash.length ? [{ key: 'cash', label: 'Cash', color: 'var(--series-1)', values: [...pastCash.map((p) => p.cash), fc.cash, ...fc.months.slice(1).map(() => null)] }] : []),
+    { key: 'projected', label: 'Projected', color: 'var(--series-1)', dashed: true, values: [...pastCash.map(() => null), fc.cash, ...fc.months.slice(1).map((m) => m.balance)] },
+  ];
+  const outlookEnd = fc?.months.at(-1);
 
   return (
     <>
@@ -156,6 +172,47 @@ export function Dashboard() {
               </>;
             }} />
           <div className="sub">Month-end balances. Accounts with transactions are worked back from today's balance; property, investments and loans use the balance recorded for each month.</div>
+        </div>
+      )}
+
+      {fc && (
+        <div className="cols-2">
+          <div className="card">
+            <div className="card-head">
+              <div>
+                <h2>Cash outlook</h2>
+                <div className="sub">
+                  {outlookEnd && <><b className={outlookEnd.balance >= fc.cash ? 'good' : 'bad'}>{fmtMoney(outlookEnd.balance)}</b> by the end of {monthLabel(outlookEnd.month, true)} at a typical month</>}
+                </div>
+              </div>
+              <Legend items={outlook.map((x) => ({ label: x.label, color: x.color, dashed: x.dashed }))} />
+            </div>
+            <LineChart months={outlookMonths} series={outlook} format={fmtMoney} height={220}
+              tooltipExtra={(i) => i > nowAt && fc.months[i - nowAt]?.billCount > 0 && (
+                <div className="tt-row"><span /><span>Bills due</span><b>{fmtMoney(fc.months[i - nowAt].bills)}</b></div>)} />
+            <div className="sub">
+              {fc.basis.length
+                ? <>A typical month is the median of {monthLabel(fc.basis[0], true)} – {monthLabel(fc.basis.at(-1)!, true)}: {fmtMoney(fc.income)} in, {fmtMoney(fc.spending)} out. Transfers between your accounts are left out.</>
+                : 'No completed months to project from yet.'}
+              {fc.owner !== 'all' && <> Only {fc.owner} cash accounts; money moved between personal and business counts as neither.</>}
+            </div>
+          </div>
+          <div className="card">
+            <h2>Month by month</h2>
+            <table className="compact">
+              <thead><tr><th>Month</th><th className="num">In</th><th className="num">Out</th><th className="num">Bills due</th><th className="num">Cash at end</th></tr></thead>
+              <tbody>{fc.months.map((m, i) => (
+                <tr key={m.month}>
+                  <td>{monthLabel(m.month, true)}{i === 0 ? ' (rest)' : ''}</td>
+                  <td className="num">{fmtMoney(m.income)}</td>
+                  <td className="num">{fmtMoney(m.spending)}</td>
+                  <td className="num">{m.billCount ? fmtMoney(m.bills) : <span className="muted">–</span>}</td>
+                  <td className={m.balance < 0 ? 'num bad' : 'num'}><b>{fmtMoney(m.balance)}</b></td>
+                </tr>))}
+              </tbody>
+            </table>
+            <div className="sub">Bills due are already part of a typical month's spending, so they aren't taken off twice.</div>
+          </div>
         </div>
       )}
 
