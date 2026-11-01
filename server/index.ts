@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { db, getSettings, CATEGORIES } from './db.ts';
 import {
   amortize, billStatus, fireSummary, nextOccurrence, occurrencesBetween, paymentsMade,
-  todayISO, addDays, addMonths, txHash, type Frequency, type LoanInputs,
+  todayISO, addDays, addMonths, txHash, matchRule, normText, type Frequency, type LoanInputs,
 } from './logic.ts';
 
 const app = express();
@@ -77,14 +77,16 @@ app.get('/api/transactions', (req, res) => {
   if (typeof q.category === 'string' && q.category) {
     if (q.category === '__none') where.push('t.category IS NULL'); else { where.push('t.category = ?'); p.push(q.category); }
   }
-  if (typeof q.q === 'string' && q.q) { where.push('t.description LIKE ?'); p.push(`%${q.q}%`); }
   const rows = all(
     `SELECT t.id, t.account_id, a.name AS account, a.owner, t.date, t.amount, t.description, t.category
      FROM transactions t JOIN accounts a ON a.id = t.account_id
-     WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.id DESC LIMIT 1000`,
+     WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.id DESC`,
     ...p,
   );
-  res.json(rows);
+  // Text search is done here: SQLite's LIKE does not fold Polish capitals.
+  const needle = typeof q.q === 'string' ? normText(q.q) : '';
+  const found = needle ? rows.filter((r) => normText(String(r.description)).includes(needle)) : rows;
+  res.json(found.slice(0, 1000));
 });
 
 app.patch('/api/transactions/:id', (req, res) => {
@@ -95,18 +97,32 @@ app.patch('/api/transactions/:id', (req, res) => {
 
 // ------------------------------------------------------------------ category rules
 app.get('/api/rules', (_req, res) => res.json(all('SELECT * FROM category_rules ORDER BY id')));
+type RuleRow = { id: number; pattern: string; category: string };
+
+/** File every uncategorised transaction that a rule matches. Never touches a category set by hand. */
+function applyRules(): number {
+  const rules = all('SELECT id, pattern, category FROM category_rules') as unknown as RuleRow[];
+  if (!rules.length) return 0;
+  let changed = 0;
+  db.exec('BEGIN');
+  try {
+    for (const t of all('SELECT id, description FROM transactions WHERE category IS NULL')) {
+      const rule = matchRule(rules, String(t.description));
+      if (rule) { run('UPDATE transactions SET category = ? WHERE id = ?', rule.category, Number(t.id)); changed++; }
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return changed;
+}
+
 app.post('/api/rules', (req, res) => {
   const pattern = str(req.body?.pattern).trim();
   const category = str(req.body?.category);
   if (!pattern || !category) return bad(res, 'pattern and category required');
   run('INSERT INTO category_rules (pattern, category) VALUES (?, ?)', pattern, category);
-  // apply retroactively to uncategorised transactions
-  const r = run(
-    'UPDATE transactions SET category = ? WHERE category IS NULL AND lower(description) LIKE ?',
-    category, `%${pattern.toLowerCase()}%`,
-  );
-  res.json({ categorised: Number(r.changes) });
+  res.json({ categorised: applyRules() });
 });
+app.post('/api/rules/apply', (_req, res) => res.json({ categorised: applyRules() }));
 app.delete('/api/rules/:id', (req, res) => { run('DELETE FROM category_rules WHERE id = ?', Number(req.params.id)); res.json({ ok: true }); });
 
 // ------------------------------------------------------------------ bills
@@ -211,9 +227,9 @@ app.post('/api/import', (req, res) => {
       const occurrence = (seen.get(key) ?? 0) + 1;
       seen.set(key, occurrence);
 
-      const lower = description.toLowerCase();
-      let category = rules.find((x) => lower.includes(x.pattern.toLowerCase()))?.category ?? null;
-      const bill = r.amount < 0 ? bills.find((b) => lower.includes(String(b.match_pattern).toLowerCase())) : undefined;
+      const lower = normText(description);
+      let category = matchRule(rules, description)?.category ?? null;
+      const bill = r.amount < 0 ? bills.find((b) => lower.includes(normText(String(b.match_pattern)))) : undefined;
       if (bill && !category) category = bill.category;
 
       const ins = run(

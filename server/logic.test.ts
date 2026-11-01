@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   addMonths, amortize, billStatus, fireSummary, monthlyPayment, nextOccurrence,
-  occurrencesBetween, parseAmount, parseDate, paymentsMade, txHash,
+  matchRule, occurrencesBetween, parseAmount, parseDate, paymentsMade, txHash,
 } from './logic.ts';
 
 const close = (a: number, b: number, eps = 0.01) => assert.ok(Math.abs(a - b) < eps, `${a} !~ ${b}`);
@@ -88,4 +88,13 @@ test('transaction hash is stable, and separates identical lines by occurrence', 
   assert.equal(a, txHash('2026-10-01', -12.5, 'coffee shop', 1));
   assert.notEqual(a, txHash('2026-10-01', -12.5, 'coffee shop', 2));
   assert.notEqual(a, txHash('2026-10-02', -12.5, 'coffee shop', 1));
+});
+
+test('rules match Polish capitals and padded text, and the most specific rule wins', () => {
+  const rules = [{ pattern: 'żabka', category: 'Groceries' }, { pattern: 'ZAKUP PRZY UŻYCIU', category: 'Misc' }, { pattern: 'żabka  zakup przy użyciu karty', category: 'Eating Out' }];
+  assert.equal(matchRule(rules, 'Żabka  ZAKUP PRZY UŻYCIU KARTY W KRAJU')?.category, 'Eating Out');
+  assert.equal(matchRule(rules, 'ŻABKA Z5555')?.category, 'Groceries');
+  assert.equal(matchRule([{ pattern: 'UŻYCIU KARTY', category: 'X' }], 'zakup przy użyciu   karty')?.category, 'X');
+  assert.equal(matchRule(rules, 'Biedronka'), undefined);
+  assert.equal(matchRule([{ pattern: '  ', category: 'X' }], 'anything'), undefined);
 });

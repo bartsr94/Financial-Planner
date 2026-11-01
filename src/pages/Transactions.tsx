@@ -10,7 +10,9 @@ export function Transactions() {
   const { data: txs, error, reload } = useGet<Tx[]>(`/transactions?${query}`);
   const { data: accounts } = useGet<Account[]>('/accounts');
   const { data: meta } = useGet<{ categories: string[] }>('/meta');
+  const { data: rules, reload: reloadRules } = useGet<{ id: number; pattern: string; category: string }[]>('/rules');
   const [ruleFor, setRuleFor] = useState<Tx | null>(null);
+  const [showRules, setShowRules] = useState(false);
 
   async function setCat(tx: Tx, cat: string) {
     await api(`/transactions/${tx.id}`, 'PATCH', { category: cat });
@@ -23,8 +25,19 @@ export function Transactions() {
     if (!ruleFor?.category || !pattern.trim()) return;
     const r = await api<{ categorised: number }>('/rules', 'POST', { pattern, category: ruleFor.category });
     setRuleFor(null);
+    reload(); reloadRules();
+    alert(`Rule saved. ${r.categorised} uncategorised transaction(s) filed.`);
+  }
+
+  async function applyAll() {
+    const r = await api<{ categorised: number }>('/rules/apply', 'POST', {});
     reload();
-    alert(`Rule saved. ${r.categorised} other uncategorised transaction(s) updated.`);
+    alert(`${r.categorised} uncategorised transaction(s) filed.`);
+  }
+
+  async function deleteRule(id: number) {
+    await api(`/rules/${id}`, 'DELETE');
+    reloadRules();
   }
 
   if (error) return <p className="error">{error}</p>;
@@ -45,8 +58,24 @@ export function Transactions() {
       </div>
 
       {ruleFor && (
-        <RuleBox tx={ruleFor} onSave={makeRule} onCancel={() => setRuleFor(null)} />
+        <RuleBox key={ruleFor.id} tx={ruleFor} onSave={makeRule} onCancel={() => setRuleFor(null)} />
       )}
+
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button className="btn" onClick={() => setShowRules(!showRules)}>{showRules ? 'Hide' : 'Show'} rules ({rules?.length ?? 0})</button>
+        <button className="btn" onClick={applyAll}>Apply rules to uncategorised</button>
+      </div>
+      {showRules && (
+        <div className="card" style={{ marginBottom: 12 }}>
+          {!rules?.length ? <div className="muted">No rules yet. Pick a category on a transaction to make one.</div> : (
+            <table>
+              <thead><tr><th>Text contains</th><th>Category</th><th></th></tr></thead>
+              <tbody>{rules.map((r) => (
+                <tr key={r.id}><td style={{ overflowWrap: 'anywhere' }}>{r.pattern}</td><td>{r.category}</td>
+                  <td><button className="btn" onClick={() => deleteRule(r.id)}>✕</button></td></tr>))}</tbody>
+            </table>)}
+          <div className="sub">Matching ignores capitals and extra spaces. If several rules match, the longest text wins. Rules only fill in uncategorised transactions; they never change one you set by hand.</div>
+        </div>)}
 
       <div className="card scroll">
         {!txs ? <div className="muted">Loading…</div> : txs.length === 0 ? <div className="muted">No transactions. Import a statement first.</div> : (
@@ -72,8 +101,12 @@ export function Transactions() {
   );
 }
 
+// Suggest the merchant, not the bank's boilerplate ("ZAKUP PRZY UŻYCIU KARTY…", "BLIK…", "PRZELEW…").
+const merchantOf = (d: string) =>
+  d.replace(/\s+/g, ' ').split(/ (?:ZAKUP PRZY|ZWROT|BLIK|PRZELEW|WYPŁATA GOTÓWKI|PP\/)/i)[0].trim().slice(0, 40);
+
 function RuleBox({ tx, onSave, onCancel }: { tx: Tx; onSave: (p: string) => void; onCancel: () => void }) {
-  const [pattern, setPattern] = useState(tx.description.slice(0, 30));
+  const [pattern, setPattern] = useState(merchantOf(tx.description));
   return (
     <div className="card" style={{ marginBottom: 12 }}>
       <div className="row">

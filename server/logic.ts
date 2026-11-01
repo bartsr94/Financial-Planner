@@ -181,3 +181,22 @@ export function txHash(date: string, amount: number, description: string, occurr
   const text = `${date}|${amount.toFixed(2)}|${description.trim().toLowerCase().replace(/\s+/g, ' ')}|${occurrence}`;
   return createHash('sha1').update(text).digest('hex').slice(0, 20);
 }
+
+// ---------------------------------------------------------------- text matching (rules, bills, search)
+
+/** Case-fold and collapse whitespace. SQLite's lower()/LIKE only fold A-Z, so Polish text is matched here instead. */
+export function normText(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** The rule whose pattern is found in the description. The longest pattern wins, so a specific rule beats a broad one. */
+export function matchRule<T extends { pattern: string }>(rules: T[], description: string): T | undefined {
+  const d = normText(description);
+  let best: T | undefined;
+  let bestLen = 0;
+  for (const r of rules) {
+    const p = normText(r.pattern);
+    if (p && d.includes(p) && p.length > bestLen) { best = r; bestLen = p.length; }
+  }
+  return best;
+}
