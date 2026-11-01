@@ -128,7 +128,7 @@ const seed = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, 
 for (const [k, v] of Object.entries(DEFAULTS)) seed.run(k, v);
 
 export const CATEGORIES = [
-  'Housing', 'Gas (Home)', 'Electric', 'Internet', 'Insurance', 'Groceries', 'Eating Out',
+  'Housing', 'Rent', 'Gas (Home)', 'Electric', 'Internet', 'Insurance', 'Groceries', 'Eating Out',
   'Gas (Car)', 'Rideshare', 'Public Transit', 'Tolls', 'Entertainment', 'Clothing',
   'Self Care', 'Debt Repayment', 'Gym', 'Music', 'Education', 'Medical', 'Gifts',
   'Charity', 'Fees', 'Taxes', 'Income', 'Transfer', 'Misc',
